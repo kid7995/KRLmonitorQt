@@ -1,0 +1,848 @@
+#include "chartview.h"
+
+#include <QPainter>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <cmath>
+#include <algorithm>
+#include <limits>
+
+#include "theme.h"
+#include "decimate.h"
+
+namespace {
+
+QVector<double> toDouble(const QVector<int>& v) {
+    QVector<double> r(v.size());
+    for (int i = 0; i < v.size(); ++i) {
+        r[i] = double(v[i]);
+    }
+    return r;
+}
+
+QColor lerp(const QColor& a, const QColor& b, double t) {
+    t = qBound(0.0, t, 1.0);
+    return QColor(a.red() + int((b.red() - a.red()) * t),
+                  a.green() + int((b.green() - a.green()) * t),
+                  a.blue() + int((b.blue() - a.blue()) * t));
+}
+
+double niceNum(double x, bool roundUp) {
+    if (x <= 0) return 1.0;
+    double e = std::floor(std::log10(x));
+    double f = x / std::pow(10.0, e);
+    double nf;
+    if (roundUp) {
+        if (f < 1.5)      nf = 1.0;
+        else if (f < 3.0) nf = 2.0;
+        else if (f < 7.0) nf = 5.0;
+        else              nf = 10.0;
+    } else {
+        if (f <= 1.0)     nf = 1.0;
+        else if (f <= 2.0) nf = 2.0;
+        else if (f <= 5.0) nf = 5.0;
+        else               nf = 10.0;
+    }
+    return nf * std::pow(10.0, e);
+}
+
+QVector<double> niceTicks(double lo, double hi, int maxTicks) {
+    QVector<double> out;
+    if (!(hi > lo)) {
+        if (lo == hi) out.append(lo);
+        return out;
+    }
+    double range = niceNum(hi - lo, false);
+    double step = niceNum(range / std::max(1, maxTicks - 1), true);
+    double start = std::ceil(lo / step) * step;
+    for (double v = start; v <= hi + step * 1e-9; v += step) {
+        if (v < lo - step * 1e-9) continue;
+        out.append(v);
+        if (out.size() > 1000) break;
+    }
+    return out;
+}
+
+QString formatTick(double v) {
+    double av = std::fabs(v);
+    if (av < 1e-12) return QStringLiteral("0");
+    if (av >= 1000.0) return theme::formatThousands((long long)std::llround(v));
+    QString s;
+    if (av < 10.0) s = QString::number(v, 'f', 3);
+    else           s = QString::number(v, 'f', 1);
+    while (s.endsWith('0')) s.chop(1);
+    if (s.endsWith('.')) s.chop(1);
+    return s;
+}
+
+}  // namespace
+
+ChartView::ChartView(QVector<DataGroup*>* groups, Recorder* recorder, QWidget* parent)
+    : QWidget(parent), m_groups(groups), m_recorder(recorder) {
+    setMouseTracking(true);
+    setAutoFillBackground(false);
+    setMinimumSize(400, 200);
+}
+
+// ── 坐标变换 ────────────────────────────────────────────────────
+
+QRect ChartView::plotRect() const {
+    int l = qRound(width() * 0.085);
+    int r = qRound(width() * 0.085);
+    int t = qMax(34, qRound(height() * 0.06));
+    int b = qMax(44, qRound(height() * 0.12));
+    return QRect(l, t, width() - l - r, height() - t - b);
+}
+
+double ChartView::xToPx(double x) const {
+    QRect r = plotRect();
+    if (m_x1 == m_x0) return r.left() + r.width() / 2.0;
+    return r.left() + (x - m_x0) / (m_x1 - m_x0) * r.width();
+}
+
+double ChartView::y1ToPx(double y) const {
+    QRect r = plotRect();
+    if (m_y11 == m_y10) return r.bottom() - r.height() / 2.0;
+    return r.bottom() - (y - m_y10) / (m_y11 - m_y10) * r.height();
+}
+
+double ChartView::y2ToPx(double y) const {
+    QRect r = plotRect();
+    if (m_y21 == m_y20) return r.bottom() - r.height() / 2.0;
+    return r.bottom() - (y - m_y20) / (m_y21 - m_y20) * r.height();
+}
+
+double ChartView::pxToX(double px) const {
+    QRect r = plotRect();
+    if (m_x1 == m_x0) return m_x0;
+    return m_x0 + (px - r.left()) / double(r.width()) * (m_x1 - m_x0);
+}
+
+double ChartView::pxToY1(double py) const {
+    QRect r = plotRect();
+    return m_y10 + (r.bottom() - py) / double(r.height()) * (m_y11 - m_y10);
+}
+
+double ChartView::pxToY2(double py) const {
+    QRect r = plotRect();
+    return m_y20 + (r.bottom() - py) / double(r.height()) * (m_y21 - m_y20);
+}
+
+DataGroup* ChartView::refGroup() const {
+    if (m_groups->isEmpty()) return nullptr;
+    int idx = m_refGroupIdx;
+    if (idx < 0 || idx >= m_groups->size()) idx = 0;
+    return (*m_groups)[idx];
+}
+
+// ── 范围重算 ────────────────────────────────────────────────────
+
+void ChartView::computeBounds(double& x0, double& x1, double& y10, double& y11,
+                              double& y20, double& y21,
+                              bool& hasX, bool& hasY1, bool& hasY2) {
+    const double INF = std::numeric_limits<double>::infinity();
+    x0 = y10 = y20 = INF;
+    x1 = y11 = y21 = -INF;
+    hasX = hasY1 = hasY2 = false;
+
+    auto feed = [&](const XY& xy, bool fx, bool fy1, bool fy2) {
+        for (int i = 0; i < xy.t.size(); ++i) {
+            double tv = xy.t[i];
+            double yv = xy.y[i];
+            if (fx)  { if (tv < x0) x0 = tv; if (tv > x1) x1 = tv; hasX = true; }
+            if (fy1) { if (yv < y10) y10 = yv; if (yv > y11) y11 = yv; hasY1 = true; }
+            if (fy2) { if (yv < y20) y20 = yv; if (yv > y21) y21 = yv; hasY2 = true; }
+        }
+    };
+
+    if (m_overlayMode) {
+        DataGroup* g = refGroup();
+        if (g) {
+            for (const Pass& p : g->passes) {
+                int i1 = p.i1 + 1;
+                if (i1 > g->times.size()) i1 = g->times.size();
+                QVector<double> tt;
+                QVector<int> pp, ff;
+                for (int i = p.i0; i < i1; ++i) {
+                    tt.append(g->times[i] - p.t0);
+                    pp.append(g->pos[i]);
+                    ff.append(g->force[i]);
+                }
+                if (tt.isEmpty()) continue;
+                if (g->showPos)   feed(decimate(tt, toDouble(pp)), true, true, false);
+                if (g->showForce) feed(decimate(tt, toDouble(ff)), true, false, true);
+            }
+        }
+    } else {
+        if (m_showMonitor && m_recorder) {
+            feed(cachedXY(m_recorder->monDec, QStringLiteral("pos"),
+                          m_recorder->monTimes, m_recorder->monPos), true, true, false);
+            feed(cachedXY(m_recorder->monDec, QStringLiteral("force"),
+                          m_recorder->monTimes, m_recorder->monForce), true, false, true);
+        }
+        for (DataGroup* g : *m_groups) {
+            if (g->showPos) {
+                feed(cachedXY(g->decCache, QStringLiteral("pos"), g->times, g->pos), true, true, false);
+            }
+            if (g->showForce) {
+                feed(cachedXY(g->decCache, QStringLiteral("force"), g->times, g->force), true, false, true);
+            }
+            if (m_showEsPos && g->hasEs) {
+                feed(cachedXY(g->decCache, QStringLiteral("es"), g->times, g->esPos), true, true, false);
+            }
+        }
+    }
+}
+
+void ChartView::relimAll() {
+    double x0, x1, y10, y11, y20, y21;
+    bool hasX, hasY1, hasY2;
+    computeBounds(x0, x1, y10, y11, y20, y21, hasX, hasY1, hasY2);
+
+    auto apply = [](bool has, double lo, double hi, double& o0, double& o1) {
+        if (has) {
+            double pad = (hi - lo) * 0.05;
+            if (pad <= 0) pad = std::max(1.0, std::fabs(hi) * 0.05);
+            o0 = lo - pad;
+            o1 = hi + pad;
+        } else {
+            o0 = 0.0;
+            o1 = 1.0;
+        }
+    };
+    apply(hasX, x0, x1, m_x0, m_x1);
+    apply(hasY1, y10, y11, m_y10, m_y11);
+    apply(hasY2, y20, y21, m_y20, m_y21);
+    update();
+}
+
+void ChartView::resetView() {
+    m_locked = false;
+    emit lockChanged(false, QString());
+    relimAll();
+}
+
+// ── 绘制 ────────────────────────────────────────────────────────
+
+void ChartView::drawLine(QPainter& p, const XY& xy, const QColor& color,
+                         Qt::PenStyle style, double lw, bool y2, double alpha) {
+    if (xy.t.isEmpty()) return;
+    QColor c = color;
+    c.setAlphaF(alpha);
+    QPen pen(c);
+    pen.setWidthF(lw);
+    pen.setCosmetic(true);
+    pen.setStyle(style);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    QPolygonF poly;
+    poly.reserve(xy.t.size());
+    for (int i = 0; i < xy.t.size(); ++i) {
+        poly << QPointF(xToPx(xy.t[i]), y2 ? y2ToPx(xy.y[i]) : y1ToPx(xy.y[i]));
+    }
+    p.drawPolyline(poly);
+}
+
+void ChartView::drawStair(QPainter& p, const XY& xy, const QColor& color,
+                          double lw, double alpha) {
+    if (xy.t.size() < 1) return;
+    QColor c = color;
+    c.setAlphaF(alpha);
+    QPen pen(c);
+    pen.setWidthF(lw);
+    pen.setCosmetic(true);
+    pen.setStyle(Qt::CustomDashLine);
+    pen.setDashPattern(QVector<qreal>{6.0, 3.0});  // (0,(6,3)) steps-post 虚线
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    QPolygonF poly;
+    for (int i = 0; i < xy.t.size(); ++i) {
+        double px = xToPx(xy.t[i]);
+        double py = y1ToPx(xy.y[i]);
+        poly << QPointF(px, py);
+        if (i + 1 < xy.t.size()) {
+            poly << QPointF(xToPx(xy.t[i + 1]), py);
+        }
+    }
+    p.drawPolyline(poly);
+}
+
+void ChartView::drawGrid(QPainter& p) {
+    QRect plot = plotRect();
+    QColor c = theme::BORDER;
+    c.setAlphaF(0.6);
+    QPen pen(c);
+    pen.setStyle(Qt::DashLine);
+    pen.setWidthF(0.5);
+    pen.setCosmetic(true);
+    p.setPen(pen);
+
+    QVector<double> xt = niceTicks(m_x0, m_x1, 8);
+    for (double v : xt) {
+        double px = xToPx(v);
+        p.drawLine(QPointF(px, plot.top()), QPointF(px, plot.bottom()));
+    }
+    QVector<double> y1t = niceTicks(m_y10, m_y11, 8);
+    for (double v : y1t) {
+        double py = y1ToPx(v);
+        p.drawLine(QPointF(plot.left(), py), QPointF(plot.right(), py));
+    }
+}
+
+void ChartView::drawPassBands(QPainter& p) {
+    if (!m_showSegments || m_overlayMode) return;
+    DataGroup* g = refGroup();
+    if (!g || g->passes.isEmpty()) return;
+    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    QRect plot = plotRect();
+    QColor c = pal.accent;
+    c.setAlphaF(0.055);
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    for (int k = 0; k < g->passes.size(); k += 2) {
+        const Pass& pass = g->passes[k];
+        double x0 = xToPx(pass.t0);
+        double x1 = xToPx(pass.t1);
+        p.drawRect(QRectF(QPointF(x0, plot.top()), QPointF(x1, plot.bottom())));
+    }
+}
+
+void ChartView::drawPassDividers(QPainter& p) {
+    if (!m_showSegments || m_overlayMode) return;
+    QRect plot = plotRect();
+    for (DataGroup* g : *m_groups) {
+        if (g->passes.isEmpty()) continue;
+        const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+        QColor c = pal.accent;
+        c.setAlphaF(0.40);
+        QPen pen(c);
+        pen.setWidthF(0.9);
+        pen.setCosmetic(true);
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        for (const Pass& pass : g->passes) {
+            double x = xToPx(pass.t0);
+            p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+            x = xToPx(pass.t1);
+            p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+        }
+    }
+}
+
+void ChartView::drawPassAnnotations(QPainter& p) {
+    if (!m_showSegments || m_overlayMode) return;
+    DataGroup* g = refGroup();
+    if (!g || g->passes.isEmpty()) return;
+    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    QRect plot = plotRect();
+
+    QFont f = p.font();
+    f.setPixelSize(10);  // ~7.5pt
+    p.setFont(f);
+    QFontMetrics fm(f);
+    QColor c = pal.accent;
+    c.setAlphaF(0.95);
+    p.setPen(c);
+
+    int n = g->passes.size();
+    int step = (n <= 20) ? 1 : (n + 19) / 20;
+    for (int k = 0; k < n; ++k) {
+        if (k % step) continue;
+        const Pass& pass = g->passes[k];
+        double x = xToPx((pass.t0 + pass.t1) / 2.0);
+        QString txt = QStringLiteral("#%1").arg(pass.no);
+        int w = fm.horizontalAdvance(txt);
+        int h = fm.height();
+        p.drawText(QRectF(x - w / 2.0, plot.top() - 4 - h, w, h),
+                   Qt::AlignHCenter | Qt::AlignTop, txt);
+    }
+}
+
+void ChartView::drawOverlay(QPainter& p) {
+    DataGroup* g = refGroup();
+    if (!g || g->passes.isEmpty()) return;
+    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    QColor dark(0x2b, 0x31, 0x38);
+    int n = g->passes.size();
+    for (int k = 0; k < n; ++k) {
+        const Pass& pass = g->passes[k];
+        double frac = double(k + 1) / n;
+        QColor cpos = lerp(dark, pal.pos, frac);
+        QColor cforce = lerp(dark, pal.force, frac);
+
+        int i0 = pass.i0;
+        int i1 = pass.i1 + 1;
+        if (i1 > g->times.size()) i1 = g->times.size();
+        QVector<double> tt;
+        QVector<int> pp, ff;
+        for (int i = i0; i < i1; ++i) {
+            tt.append(g->times[i] - pass.t0);
+            pp.append(g->pos[i]);
+            ff.append(g->force[i]);
+        }
+        if (tt.isEmpty()) continue;
+        if (g->showPos)   drawLine(p, decimate(tt, toDouble(pp)), cpos, Qt::SolidLine, 1.4, false, 0.9);
+        if (g->showForce) drawLine(p, decimate(tt, toDouble(ff)), cforce, Qt::DashLine, 1.2, true, 0.85);
+    }
+}
+
+void ChartView::drawAxes(QPainter& p) {
+    QRect plot = plotRect();
+
+    p.setPen(QPen(theme::BORDER, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(plot);
+
+    QFont f = p.font();
+    f.setPixelSize(11);
+    p.setFont(f);
+    QFontMetrics fm(f);
+    p.setPen(theme::C_DIM);
+
+    // X 轴刻度
+    QVector<double> xt = niceTicks(m_x0, m_x1, 8);
+    for (double v : xt) {
+        double px = xToPx(v);
+        p.drawLine(QPointF(px, plot.bottom()), QPointF(px, plot.bottom() + 3));
+        QString s = formatTick(v);
+        int w = fm.horizontalAdvance(s);
+        p.drawText(QPointF(px - w / 2.0, plot.bottom() + 3 + fm.ascent()), s);
+    }
+    // Y1 轴刻度
+    QVector<double> y1t = niceTicks(m_y10, m_y11, 8);
+    for (double v : y1t) {
+        double py = y1ToPx(v);
+        p.drawLine(QPointF(plot.left() - 3, py), QPointF(plot.left(), py));
+        QString s = formatTick(v);
+        int w = fm.horizontalAdvance(s);
+        p.drawText(QPointF(plot.left() - 5 - w, py + fm.ascent() / 2 - 1), s);
+    }
+    // Y2 轴刻度
+    QVector<double> y2t = niceTicks(m_y20, m_y21, 8);
+    for (double v : y2t) {
+        double py = y2ToPx(v);
+        p.drawLine(QPointF(plot.right(), py), QPointF(plot.right() + 3, py));
+        QString s = formatTick(v);
+        p.drawText(QPointF(plot.right() + 5, py + fm.ascent() / 2 - 1), s);
+    }
+
+    // X 轴标签
+    int xlw = fm.horizontalAdvance(m_xlabel);
+    p.drawText(QPointF(plot.center().x() - xlw / 2.0, plot.bottom() + 3 + fm.ascent() + 22),
+               m_xlabel);
+
+    // Y 轴标签（旋转）
+    QFont yf = p.font();
+    yf.setPixelSize(12);
+    p.setFont(yf);
+    p.setPen(theme::C_DIM);
+    p.save();
+    p.translate(plot.left() - 40, plot.center().y());
+    p.rotate(-90);
+    p.drawText(QRectF(-60, -8, 120, 16), Qt::AlignCenter, QStringLiteral("PosR"));
+    p.restore();
+    p.save();
+    p.translate(plot.right() + 40, plot.center().y());
+    p.rotate(90);
+    p.drawText(QRectF(-60, -8, 120, 16), Qt::AlignCenter, QStringLiteral("ForceR"));
+    p.restore();
+}
+
+void ChartView::drawLegend(QPainter& p) {
+    struct Entry {
+        QColor color;
+        Qt::PenStyle style;
+        bool customDash;
+        double dashOn;
+        double dashOff;
+        QString text;
+    };
+    QVector<Entry> entries;
+    QString title;
+
+    if (m_overlayMode) {
+        DataGroup* g = refGroup();
+        if (g && !g->passes.isEmpty()) {
+            const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+            QColor dark(0x2b, 0x31, 0x38);
+            int n = g->passes.size();
+            for (int k = 0; k < n; ++k) {
+                double frac = double(k + 1) / n;
+                Entry e;
+                e.color = lerp(dark, pal.pos, frac);
+                e.style = Qt::SolidLine;
+                e.customDash = false;
+                e.text = QStringLiteral("#%1").arg(g->passes[k].no);
+                entries.append(e);
+            }
+            title = QStringLiteral("道次（实线 PosR / 虚线 ForceR）");
+        }
+    } else {
+        for (DataGroup* g : *m_groups) {
+            const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+            if (g->showPos) {
+                Entry e; e.color = pal.pos; e.style = Qt::SolidLine; e.customDash = false;
+                e.text = QStringLiteral("%1  PosR （左轴）").arg(pal.label);
+                entries.append(e);
+            }
+            if (g->showForce) {
+                Entry e; e.color = pal.force; e.style = Qt::DashLine; e.customDash = false;
+                e.text = QStringLiteral("%1  ForceR （右轴）").arg(pal.label);
+                entries.append(e);
+            }
+            if (m_showEsPos && g->hasEs) {
+                Entry e; e.color = pal.pos; e.style = Qt::CustomDashLine; e.customDash = true;
+                e.dashOn = 6; e.dashOff = 3;
+                e.text = QStringLiteral("%1  ESpos 设定 （左轴）").arg(pal.label);
+                entries.append(e);
+            }
+        }
+    }
+    if (entries.isEmpty()) return;
+
+    QFont f = p.font();
+    f.setPixelSize(11);
+    p.setFont(f);
+    QFontMetrics fm(f);
+    int lineH = fm.height() + 4;
+    int padX = 8, padY = 6;
+    int sampleW = 22;
+    int maxW = 0;
+    for (const Entry& e : entries) maxW = qMax(maxW, fm.horizontalAdvance(e.text));
+    int titleW = title.isEmpty() ? 0 : fm.horizontalAdvance(title);
+    int boxW = padX + sampleW + 6 + maxW + padX;
+    if (titleW + 2 * padX > boxW) boxW = titleW + 2 * padX;
+    int boxH = padY + (title.isEmpty() ? 0 : fm.height() + 4) + entries.size() * lineH + padY;
+
+    QRect plot = plotRect();
+    int bx = plot.left() + 6;
+    int by = plot.top() + 6;
+    QRect box(bx, by, boxW, boxH);
+
+    QColor panel = theme::PANEL;
+    panel.setAlphaF(0.9);
+    p.setPen(QPen(theme::BORDER, 1));
+    p.setBrush(panel);
+    p.drawRoundedRect(box, 4, 4);
+
+    int y = by + padY;
+    if (!title.isEmpty()) {
+        p.setPen(theme::C_DIM);
+        p.drawText(QPointF(bx + padX, y + fm.ascent()), title);
+        y += fm.height() + 4;
+    }
+    for (const Entry& e : entries) {
+        QPen pen(e.color);
+        pen.setWidthF(1.6);
+        if (e.customDash) {
+            pen.setStyle(Qt::CustomDashLine);
+            pen.setDashPattern(QVector<qreal>{e.dashOn, e.dashOff});
+        } else {
+            pen.setStyle(e.style);
+        }
+        p.setPen(pen);
+        int sy = y + fm.ascent() - 2;
+        p.drawLine(QPointF(bx + padX, sy), QPointF(bx + padX + sampleW, sy));
+        p.setPen(theme::C_TEXT);
+        p.drawText(QPointF(bx + padX + sampleW + 6, y + fm.ascent()), e.text);
+        y += lineH;
+    }
+}
+
+void ChartView::drawHover(QPainter& p) {
+    QRect plot = plotRect();
+    QFont f = p.font();
+    f.setPixelSize(11);
+    p.setFont(f);
+    QFontMetrics fm(f);
+
+    for (const HoverMark& m : m_hoverMarks) {
+        QColor acc = m.accent;
+        acc.setAlphaF(0.6);
+        QPen pen(acc);
+        pen.setStyle(Qt::DashLine);
+        pen.setWidthF(0.8);
+        pen.setCosmetic(true);
+        p.setPen(pen);
+        double px = xToPx(m.tx);
+        p.drawLine(QPointF(px, plot.top()), QPointF(px, plot.bottom()));
+
+        if (m.showPos) {
+            QColor c = m.posColor;
+            p.setPen(c);
+            p.setBrush(c);
+            double py = y1ToPx(m.pos);
+            p.drawEllipse(QPointF(px, py), 3.5, 3.5);
+        }
+        if (m.showForce) {
+            QColor c = m.forceColor;
+            p.setPen(c);
+            p.setBrush(c);
+            double py = y2ToPx(m.force);
+            p.drawRect(QRectF(px - 3.5, py - 3.5, 7, 7));
+        }
+    }
+
+    if (m_hoverLines.isEmpty()) return;
+
+    int maxW = 0;
+    for (const QString& l : m_hoverLines) maxW = qMax(maxW, fm.horizontalAdvance(l));
+    int lineH = fm.height() + 2;
+    int padX = 10, padY = 6;
+    int boxW = maxW + 2 * padX;
+    int boxH = m_hoverLines.size() * lineH + 2 * padY;
+
+    double xfrac = (m_hoverX - m_x0) / qMax(m_x1 - m_x0, 1e-9);
+    double anchorX = xToPx(m_hoverX);
+    double anchorY = plot.top();
+    double boxX = (xfrac < 0.72) ? (anchorX + 10) : (anchorX - 10 - boxW);
+    double boxTop = anchorY - 8;
+    if (boxTop < 2) boxTop = 2;
+    if (boxX < plot.left()) boxX = plot.left();
+    if (boxX + boxW > plot.right()) boxX = plot.right() - boxW;
+
+    QRectF box(boxX, boxTop, boxW, boxH);
+    QColor panel = theme::PANEL;
+    panel.setAlphaF(0.95);
+    p.setPen(QPen(theme::BORDER, 1));
+    p.setBrush(panel);
+    p.drawRoundedRect(box, 5, 5);
+    p.setPen(theme::C_TEXT);
+    double ty = boxTop + padY + fm.ascent();
+    for (const QString& l : m_hoverLines) {
+        p.drawText(QPointF(boxX + padX, ty), l);
+        ty += lineH;
+    }
+}
+
+void ChartView::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.fillRect(rect(), theme::BG);
+    QRect plot = plotRect();
+    p.fillRect(plot, theme::BG);
+
+    drawPassBands(p);
+    drawGrid(p);
+    drawPassDividers(p);
+
+    if (m_overlayMode) {
+        drawOverlay(p);
+    } else {
+        if (m_showMonitor && m_recorder) {
+            drawLine(p, cachedXY(m_recorder->monDec, QStringLiteral("pos"),
+                                 m_recorder->monTimes, m_recorder->monPos),
+                     theme::C_MONITOR, Qt::SolidLine, 1.0, false, 0.6);
+            drawLine(p, cachedXY(m_recorder->monDec, QStringLiteral("force"),
+                                 m_recorder->monTimes, m_recorder->monForce),
+                     theme::C_MONITOR, Qt::DashLine, 1.0, true, 0.6);
+        }
+        for (DataGroup* g : *m_groups) {
+            const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+            if (g->showPos) {
+                drawLine(p, cachedXY(g->decCache, QStringLiteral("pos"), g->times, g->pos),
+                         pal.pos, Qt::SolidLine, 1.6, false, 0.9);
+            }
+            if (g->showForce) {
+                drawLine(p, cachedXY(g->decCache, QStringLiteral("force"), g->times, g->force),
+                         pal.force, Qt::DashLine, 1.6, true, 0.9);
+            }
+            if (m_showEsPos && g->hasEs) {
+                drawStair(p, cachedXY(g->decCache, QStringLiteral("es"), g->times, g->esPos),
+                          pal.pos, 1.0, 0.45);
+            }
+        }
+    }
+
+    drawAxes(p);
+    drawPassAnnotations(p);
+    drawLegend(p);
+    if (m_hoverValid) drawHover(p);
+}
+
+// ── 交互 ────────────────────────────────────────────────────────
+
+void ChartView::startPan(const QPointF& pos) {
+    m_panActive = true;
+    m_panStart = pos;
+    m_px0 = m_x0; m_px1 = m_x1;
+    m_py10 = m_y10; m_py11 = m_y11;
+    m_py20 = m_y20; m_py21 = m_y21;
+    if (!m_locked) {
+        m_locked = true;
+        emit lockChanged(true, QStringLiteral("🔒 手动平移中"));
+    }
+    clearHover();
+    setCursor(Qt::ClosedHandCursor);
+}
+
+void ChartView::doPan(const QPointF& pos) {
+    QRect plot = plotRect();
+    double dx = pos.x() - m_panStart.x();
+    double dy = pos.y() - m_panStart.y();
+    double w = plot.width() ? plot.width() : 1.0;
+    double h = plot.height() ? plot.height() : 1.0;
+    bool doX = (m_zoomMode == QStringLiteral("X轴") || m_zoomMode == QStringLiteral("双轴"));
+    bool doY = (m_zoomMode == QStringLiteral("Y轴") || m_zoomMode == QStringLiteral("双轴"));
+
+    if (doX) {
+        double xPerPx = (m_px1 - m_px0) / w;
+        double sx = -dx * xPerPx;
+        m_x0 = m_px0 + sx;
+        m_x1 = m_px1 + sx;
+    }
+    if (doY) {
+        double sy1 = -dy * ((m_py11 - m_py10) / h);
+        m_y10 = m_py10 + sy1;
+        m_y11 = m_py11 + sy1;
+        double sy2 = -dy * ((m_py21 - m_py20) / h);
+        m_y20 = m_py20 + sy2;
+        m_y21 = m_py21 + sy2;
+    }
+    update();
+}
+
+void ChartView::endPan() {
+    m_panActive = false;
+    unsetCursor();
+}
+
+static void zoom1d(double lo, double hi, double cursor, double scale,
+                   double& nlo, double& nhi) {
+    if (hi == lo) { nlo = lo; nhi = hi; return; }
+    double lr = (cursor - lo) / (hi - lo);
+    double ns = (hi - lo) * scale;
+    nlo = cursor - lr * ns;
+    nhi = cursor + (1 - lr) * ns;
+}
+
+void ChartView::zoomAt(const QPointF& pos, double scale) {
+    QRect plot = plotRect();
+    double fx = (pos.x() - plot.left()) / (plot.width() ? plot.width() : 1.0);
+    double fy = (plot.bottom() - pos.y()) / (plot.height() ? plot.height() : 1.0);
+    bool doX = (m_zoomMode == QStringLiteral("X轴") || m_zoomMode == QStringLiteral("双轴"));
+    bool doY = (m_zoomMode == QStringLiteral("Y轴") || m_zoomMode == QStringLiteral("双轴"));
+
+    if (doX) {
+        double cx = m_x0 + fx * (m_x1 - m_x0);
+        double nlo, nhi;
+        zoom1d(m_x0, m_x1, cx, scale, nlo, nhi);
+        m_x0 = nlo; m_x1 = nhi;
+    }
+    if (doY) {
+        double cy1 = m_y10 + fy * (m_y11 - m_y10);
+        zoom1d(m_y10, m_y11, cy1, scale, m_y10, m_y11);
+        double cy2 = m_y20 + fy * (m_y21 - m_y20);
+        zoom1d(m_y20, m_y21, cy2, scale, m_y20, m_y21);
+    }
+    if (!m_locked) {
+        m_locked = true;
+        emit lockChanged(true, QStringLiteral("🔒 手动缩放中"));
+    }
+    update();
+}
+
+void ChartView::clearHover() {
+    if (!m_hoverValid && m_hoverMarks.isEmpty()) return;
+    m_hoverValid = false;
+    m_hoverMarks.clear();
+    m_hoverLines.clear();
+    update();
+}
+
+void ChartView::computeHover(double xm) {
+    m_hoverValid = true;
+    m_hoverX = xm;
+    m_hoverMarks.clear();
+    m_hoverLines.clear();
+    m_hoverLines << QStringLiteral(" t ≈ %.3f s").arg(xm);
+
+    for (DataGroup* g : *m_groups) {
+        if (g->times.isEmpty()) continue;
+        int idx = 0;
+        double best = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < g->times.size(); ++i) {
+            double d = std::fabs(g->times[i] - xm);
+            if (d < best) { best = d; idx = i; }
+        }
+        double tx = g->times[idx];
+        const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+
+        HoverMark m;
+        m.tx = tx;
+        m.accent = pal.accent;
+        m.posColor = pal.pos;
+        m.forceColor = pal.force;
+        m.showPos = g->showPos;
+        m.showForce = g->showForce;
+        m.pos = g->pos[idx];
+        m.force = g->force[idx];
+        m_hoverMarks.append(m);
+
+        if (!g->passes.isEmpty()) {
+            int pn = (idx < g->passNo.size()) ? g->passNo[idx] : 0;
+            QString tag = pn ? QStringLiteral("第%1道").arg(pn) : QStringLiteral("非打磨段");
+            m_hoverLines << QStringLiteral(" %1  [%2]").arg(pal.label, tag);
+        }
+        if (g->showPos) {
+            m_hoverLines << QStringLiteral(" %1  PosR   = %2")
+                            .arg(pal.label, theme::formatThousands(g->pos[idx]));
+        }
+        if (g->showForce) {
+            m_hoverLines << QStringLiteral(" %1  ForceR = %2")
+                            .arg(pal.label, theme::formatThousands(g->force[idx]));
+        }
+        if (m_showEsPos && g->hasEs && idx < g->esPos.size()) {
+            int es = g->esPos[idx];
+            long long err = (long long)es - g->pos[idx];
+            QString errs = err >= 0 ? QStringLiteral("+") + theme::formatThousands(err)
+                                    : theme::formatThousands(err);
+            m_hoverLines << QStringLiteral(" %1  ESpos  = %2   (跟随误差 %3)")
+                            .arg(pal.label, theme::formatThousands(es), errs);
+        }
+    }
+    update();
+}
+
+void ChartView::mousePressEvent(QMouseEvent* e) {
+    if (e->button() != Qt::LeftButton) return;
+    if (!plotRect().contains(e->pos())) return;
+    startPan(e->pos());
+}
+
+void ChartView::mouseMoveEvent(QMouseEvent* e) {
+    if (m_panActive) {
+        doPan(e->pos());
+        return;
+    }
+    if (m_hoverActive && !m_overlayMode) {
+        if (!plotRect().contains(e->pos())) {
+            clearHover();
+            return;
+        }
+        computeHover(pxToX(e->pos().x()));
+    }
+}
+
+void ChartView::mouseReleaseEvent(QMouseEvent* e) {
+    Q_UNUSED(e);
+    if (!m_panActive) return;
+    endPan();
+}
+
+void ChartView::wheelEvent(QWheelEvent* e) {
+    QPointF pos = e->posF();
+    if (!plotRect().contains(pos.toPoint())) return;
+    double factor = ZOOM_FACTOR;
+    double scale = (e->angleDelta().y() > 0) ? (1.0 / factor) : factor;
+    zoomAt(pos, scale);
+}
+
+void ChartView::mouseDoubleClickEvent(QMouseEvent* e) {
+    Q_UNUSED(e);
+    resetView();
+}
+
+void ChartView::leaveEvent(QEvent* e) {
+    Q_UNUSED(e);
+    if (!m_panActive) clearHover();
+}

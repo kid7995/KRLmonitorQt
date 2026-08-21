@@ -1,0 +1,15 @@
+# 构建产物
+build/
+build-*/
+
+# Qt Creator / IDE 本地配置
+.qtcreator/
+CMakeLists.txt.user
+*.user
+
+# Claude Code 本地配置
+.claude/
+
+# 系统临时文件
+Thumbs.db
+*.tmp

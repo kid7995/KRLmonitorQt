@@ -1,0 +1,207 @@
+#include "recorder.h"
+
+Recorder::Recorder(QVector<DataGroup*>* groups, std::function<int(const QString&)> createGroup,
+                   int maxPoints, int trimChunk, int maxGroups)
+    : m_groups(groups), m_createGroup(createGroup),
+      m_maxPoints(maxPoints), m_trimChunk(trimChunk), m_maxGroups(maxGroups) {}
+
+void Recorder::clearMonitor() {
+    monTimes.clear();
+    monPos.clear();
+    monForce.clear();
+    monDec.clear();
+    monStartValid = false;
+    monStartTime = 0.0;
+}
+
+void Recorder::arm() {
+    m_prevRecordOn.reset();
+    recGroupIdx = -1;
+    m_recStartTime = 0.0;
+}
+
+void Recorder::reset() {
+    arm();
+    m_recordSeq = 0;
+    clearMonitor();
+}
+
+void Recorder::markPrevUnknown() {
+    m_prevRecordOn.reset();
+}
+
+bool Recorder::noteGroupRemoved(int idx) {
+    if (recGroupIdx == idx) {
+        recGroupIdx = -1;
+        m_prevRecordOn.reset();  // 不产生假边沿
+        return true;
+    }
+    if (recGroupIdx >= 0 && recGroupIdx > idx) {
+        recGroupIdx--;
+    }
+    return false;
+}
+
+TickResult Recorder::process(QQueue<Sample>& queue, bool autoPause) {
+    TickResult r;
+    while (!queue.isEmpty()) {
+        Sample s = queue.dequeue();
+        double ts = s.ts;
+        int pos = s.pos;
+        int force = s.force;
+        bool ro = s.recordOn;
+        int pn = s.passNo;
+        int es = s.esPos;
+
+        // 首帧或恢复后 prev_record_on 未知：直接采纳当前值，不产生假边沿
+        if (!m_prevRecordOn.has_value()) {
+            m_prevRecordOn = ro;
+        }
+
+        if (ro && !m_prevRecordOn.value()) {
+            onRisingEdge(ts, r);
+        }
+
+        if (ro && recGroupIdx >= 0) {
+            append(ts, pos, force, pn, es, r);
+        } else if (recGroupIdx < 0) {
+            appendMonitor(ts, pos, force, r);
+            r.hasLastVal = true;
+            r.lastPos = pos;
+            r.lastForce = force;
+            r.lastEs = es;
+            r.lastPass = pn;
+        }
+
+        if (!ro && m_prevRecordOn.value()) {
+            onFallingEdge(r);
+        }
+
+        m_prevRecordOn = ro;
+
+        if (r.sealed && autoPause) {
+            break;  // 冻结：本帧不再处理后续采样
+        }
+    }
+    return r;
+}
+
+void Recorder::onRisingEdge(double ts, TickResult& r) {
+    if (m_groups->size() >= m_maxGroups) {
+        r.limitHit = true;
+        recGroupIdx = -1;
+        return;
+    }
+    clearMonitor();
+    r.monDirty = true;
+    m_recordSeq++;
+    recGroupIdx = m_createGroup(QStringLiteral("打磨#%1").arg(m_recordSeq));
+    m_recStartTime = ts;
+    r.structDirty = true;
+    r.started = m_recordSeq;
+}
+
+void Recorder::onFallingEdge(TickResult& r) {
+    if (recGroupIdx < 0) {
+        return;
+    }
+    DataGroup* g = (*m_groups)[recGroupIdx];
+    g->live = false;
+    if (g->curPass) {  // 收尾未闭合的道次
+        g->passes.last().t1 = g->times.last();
+        g->passes.last().i1 = g->times.size() - 1;
+    }
+    g->curPass = 0;
+    r.sealed = true;
+    r.sealedName = g->name;
+    r.sealedPasses = g->passes.size();
+    recGroupIdx = -1;
+    r.structDirty = true;
+    r.passDirty = true;
+}
+
+void Recorder::append(double ts, int pos, int force, int pn, int es, TickResult& r) {
+    DataGroup* g = (*m_groups)[recGroupIdx];
+    double rt = ts - m_recStartTime;
+    g->times.append(rt);
+    g->pos.append(pos);
+    g->force.append(force);
+    g->passNo.append(pn);
+    g->esPos.append(es);
+
+    // 实时组建组时数组是空的，has_es 只能在数据流入后判定
+    if (es && !g->hasEs) {
+        g->hasEs = true;
+        r.esEnabled.append(g);
+        r.structDirty = true;
+    }
+
+    updatePasses(g, rt, pn, r);
+    trimIfNeeded(g, r);
+
+    r.touched.insert(recGroupIdx);
+    r.hasLastVal = true;
+    r.lastPos = pos;
+    r.lastForce = force;
+    r.lastEs = es;
+    r.lastPass = pn;
+}
+
+void Recorder::updatePasses(DataGroup* g, double rt, int pn, TickResult& r) {
+    int cur = g->curPass;
+    if (pn != cur) {
+        if (cur) {  // 闭合上一道（当前帧 PassNo 已变，属下一段）
+            int last = g->times.size() - 2;
+            if (last >= g->passes.last().i0) {
+                g->passes.last().t1 = g->times[last];
+                g->passes.last().i1 = last;
+            }
+        }
+        if (pn) {  // 开启新一道
+            Pass p;
+            p.no = pn;
+            p.t0 = rt;
+            p.t1 = rt;
+            p.i0 = g->times.size() - 1;
+            p.i1 = g->times.size() - 1;
+            g->passes.append(p);
+        }
+        g->curPass = pn;
+        r.passDirty = true;
+    } else if (pn && !g->passes.isEmpty()) {  // 道次内：持续延长右边界
+        g->passes.last().t1 = rt;
+        g->passes.last().i1 = g->times.size() - 1;
+    }
+}
+
+void Recorder::trimIfNeeded(DataGroup* g, TickResult& r) {
+    if (g->times.size() <= m_maxPoints + m_trimChunk) {
+        return;
+    }
+    g->times.remove(0, m_trimChunk);
+    g->pos.remove(0, m_trimChunk);
+    g->force.remove(0, m_trimChunk);
+    g->passNo.remove(0, m_trimChunk);
+    g->esPos.remove(0, m_trimChunk);
+    g->passes = computePasses(g->times, g->passNo);
+    g->curPass = g->passNo.isEmpty() ? 0 : g->passNo.last();
+    g->decCache.clear();  // 下标全变了，抽稀缓存失效
+    r.passDirty = true;
+}
+
+void Recorder::appendMonitor(double ts, int pos, int force, TickResult& r) {
+    if (!monStartValid) {
+        monStartTime = ts;
+        monStartValid = true;
+    }
+    monTimes.append(ts - monStartTime);
+    monPos.append(pos);
+    monForce.append(force);
+    if (monTimes.size() > m_maxPoints + m_trimChunk) {
+        monTimes.remove(0, m_trimChunk);
+        monPos.remove(0, m_trimChunk);
+        monForce.remove(0, m_trimChunk);
+        monDec.clear();
+    }
+    r.monDirty = true;
+}
