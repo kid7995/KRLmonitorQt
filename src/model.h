@@ -14,7 +14,7 @@ struct Pass {
     int i1 = 0;
 };
 
-// 从逐点 PassNo 数组切出道次区间列表（PassNo == 0 为非打磨段，跳过）
+// 从逐点 PassNo 数组切出道次区间列表（PassNo == 0 的道次间返回段不建区间，跳过）
 QVector<Pass> computePasses(const QVector<double>& times, const QVector<int>& passNo);
 
 // 一组位移/力控波形（纯数据容器，无 GUI 依赖）

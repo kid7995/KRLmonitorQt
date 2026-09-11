@@ -22,6 +22,13 @@ constexpr int DISPLAY_MAX_PTS = 4000;
 // 两次全量抽稀之间，最多允许多少个新增点走"尾部拼接"的快路径
 constexpr int DEC_APPEND_MAX = 600;
 
+// ── 绘图字体自适应 ────────────────────────────────────────────────
+// 图表字号随窗口高度放大：FONT_REF_H 为默认窗口（1400×860）下图表的典型
+// 高度（此时倍率为 1，保持原设计字号），全屏放大时字号同步增大，
+// FONT_SCALE_MAX 为上限倍率。倍率下限为 1：窗口缩小时字号不随之变小。
+constexpr double FONT_REF_H = 660.0;
+constexpr double FONT_SCALE_MAX = 1.8;
+
 // ── 交互 ────────────────────────────────────────────────────────
 // 滚轮每格的缩放倍率
 constexpr double ZOOM_FACTOR = 1.25;

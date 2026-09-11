@@ -186,11 +186,11 @@ void MainWindow::buildToolbar() {
     h->setContentsMargins(8, 6, 8, 6);
     h->setSpacing(2);
 
-    m_btnStart = makeBtn(QStringLiteral("▶  开始监听"), theme::C_OK, theme::C_OK_HI);
+    m_btnStart = makeBtn(QStringLiteral("▶ 开始监听"), theme::C_OK, theme::C_OK_HI);
     connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStart);
     h->addWidget(m_btnStart);
 
-    m_btnPause = makeBtn(QStringLiteral("⏸  暂停"), theme::C_WARN, theme::C_WARN_HI);
+    m_btnPause = makeBtn(QStringLiteral("⏸ 暂停"), theme::C_WARN, theme::C_WARN_HI);
     m_btnPause->setEnabled(false);
     connect(m_btnPause, &QPushButton::clicked, this, &MainWindow::onPause);
     h->addWidget(m_btnPause);
@@ -198,15 +198,15 @@ void MainWindow::buildToolbar() {
     h->addSpacing(8);
     h->addWidget(vSeparator());
 
-    auto* btnSave = makeBtn(QStringLiteral("💾  保存"), theme::C_INFO, theme::C_INFO_HI);
+    auto* btnSave = makeBtn(QStringLiteral("💾 保存"), theme::C_INFO, theme::C_INFO_HI);
     connect(btnSave, &QPushButton::clicked, this, &MainWindow::onSave);
     h->addWidget(btnSave);
 
-    auto* btnLoad = makeBtn(QStringLiteral("➕  添加数据组"), theme::C_PURPLE, theme::C_PURPLE_HI);
+    auto* btnLoad = makeBtn(QStringLiteral("➕ 添加数据组"), theme::C_PURPLE, theme::C_PURPLE_HI);
     connect(btnLoad, &QPushButton::clicked, this, &MainWindow::onLoad);
     h->addWidget(btnLoad);
 
-    auto* btnClear = makeBtn(QStringLiteral("✕  清除全部"), theme::BORDER, theme::C_HOVER,
+    auto* btnClear = makeBtn(QStringLiteral("✕ 清除全部"), theme::BORDER, theme::C_HOVER,
                              theme::C_DIM, theme::C_TEXT);
     connect(btnClear, &QPushButton::clicked, this, &MainWindow::onClear);
     h->addWidget(btnClear);
@@ -434,7 +434,7 @@ void MainWindow::refreshGroupsPanel() {
 
         // 标题行：徽章 + 文件名 + 删除
         auto* titleRow = new QHBoxLayout();
-        QString badge = pal.label + (g->live ? QStringLiteral("  🔴") : QString());
+        QString badge = pal.label + (g->live ? QStringLiteral("🔴") : QString());
         auto* badgeLbl = new QLabel(badge, card);
         badgeLbl->setStyleSheet(QStringLiteral("background-color:%1;color:%2;padding:1px 5px;font-weight:bold;font-size:8pt;")
                                 .arg(accent, theme::BG.name()));
@@ -607,10 +607,10 @@ void MainWindow::setRecState(const QString& text, const QColor& c) {
 }
 
 void MainWindow::syncToggles() {
-    styleToggle(m_btnSeg, m_showSegments, QStringLiteral("┊  道次分割"));
-    styleToggle(m_btnOverlay, m_overlayMode, QStringLiteral("≡  叠道对比"));
-    styleToggle(m_btnEsPos, m_showEsPos, QStringLiteral("⌐  ESpos"));
-    styleToggle(m_btnAutoPause, m_autoPause, QStringLiteral("⏹  完成后暂停"));
+    styleToggle(m_btnSeg, m_showSegments, QStringLiteral("┊ 道次分割"));
+    styleToggle(m_btnOverlay, m_overlayMode, QStringLiteral("≡ 叠道对比"));
+    styleToggle(m_btnEsPos, m_showEsPos, QStringLiteral("⌐ ESpos"));
+    styleToggle(m_btnAutoPause, m_autoPause, QStringLiteral("⏹ 完成后暂停"));
 }
 
 void MainWindow::rebuildOverlayStatus() {
@@ -674,7 +674,16 @@ void MainWindow::onTick() {
             m_passLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
                                        .arg(theme::C_PASS.name()));
         } else {
-            m_passLabel->setText(QStringLiteral("⟩ 非打磨段"));
+            // PassNo==0：道次之间是上一道的反向返回段；首道之前不显示
+            int prevNo = 0;
+            if (m_recorder->recGroupIdx >= 0 && m_recorder->recGroupIdx < m_groups.size()) {
+                const DataGroup* g = m_groups[m_recorder->recGroupIdx];
+                if (!g->passes.isEmpty()) {
+                    prevNo = g->passes.last().no;
+                }
+            }
+            m_passLabel->setText(prevNo ? QStringLiteral("⟩ 第 %1 道 返回段").arg(prevNo)
+                                        : QStringLiteral("⟩ 非打磨段"));
             m_passLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
                                        .arg(theme::C_DIM.name()));
         }
@@ -735,7 +744,7 @@ void MainWindow::onStart() {
 
     m_btnStart->setEnabled(false);
     m_btnPause->setEnabled(true);
-    m_btnPause->setText(QStringLiteral("⏸  暂停"));
+    m_btnPause->setText(QStringLiteral("⏸ 暂停"));
     setRecState(QStringLiteral("○ 等待触发"), theme::C_DIM);
     setStatus(QStringLiteral("● 监听中 — 实时预览（灰）中，等待 RecordOn 触发记录…"));
     updateHoverActive();
@@ -746,7 +755,7 @@ void MainWindow::onPause() {
         m_paused = true;
         m_server->setArmed(false);
         m_btnPause->setText(QStringLiteral("▶  继续"));
-        setStatus(QStringLiteral("⏸  已暂停 — 移动鼠标查看数值"));
+        setStatus(QStringLiteral("⏸ 已暂停 — 移动鼠标查看数值"));
         updateHoverActive();
     } else {
         m_paused = false;
@@ -755,7 +764,7 @@ void MainWindow::onPause() {
         m_server->drain();
         m_recorder->clearMonitor();
         m_recorder->markPrevUnknown();
-        m_btnPause->setText(QStringLiteral("⏸  暂停"));
+        m_btnPause->setText(QStringLiteral("⏸ 暂停"));
         setStatus(QStringLiteral("● 监听中 — 实时预览（灰）中，等待 RecordOn 触发记录…"));
         updateHoverActive();
     }
@@ -864,7 +873,7 @@ void MainWindow::onClear() {
 
     m_btnStart->setEnabled(true);
     m_btnPause->setEnabled(false);
-    m_btnPause->setText(QStringLiteral("⏸  暂停"));
+    m_btnPause->setText(QStringLiteral("⏸ 暂停"));
     m_posValue->setText(QStringLiteral("—"));
     m_forceValue->setText(QStringLiteral("—"));
     m_esValue->setText(QStringLiteral("—"));

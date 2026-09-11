@@ -1,0 +1,16 @@
+﻿KRLmonitor Windows 部署包
+
+一、首次运行
+1. 可将整个 KRLmonitor-Release 文件夹复制到目标电脑，不能只复制 KRLmonitor.exe。
+2. 双击 KRLmonitor.exe。
+3. 如果提示缺少 MSVCP140.dll、VCRUNTIME140.dll 或 vcruntime140_1.dll，
+   请先双击当前目录中的 vc_redist.x64.exe，按提示安装后重新启动程序。
+
+二、网络配置
+1. 默认监听 TCP 65002 端口。
+2. Windows 防火墙需要允许 KRLmonitor.exe 入站，或放行 TCP 65002。
+3. 将 KUKA 侧 ECMMonitor.xml 的 EXTERNAL/IP 配置为目标电脑的实际 IP。
+
+三、注意
+1. 不要移动或删除 platforms、styles、imageformats 等子目录。
+2. 部署目录结构必须保持完整。

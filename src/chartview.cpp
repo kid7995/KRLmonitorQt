@@ -9,6 +9,7 @@
 
 #include "theme.h"
 #include "decimate.h"
+#include "config.h"
 
 namespace {
 
@@ -75,6 +76,22 @@ QString formatTick(double v) {
     return s;
 }
 
+// times 单调递增（实时时间戳与 CSV 均按时间顺序写入）：
+// 二分查找距 x 最近的下标，等距时取左侧点。替代原全量线性扫描，
+// 避免满数据量下每次鼠标移动都做几十万次比较而卡住界面。
+int nearestIndex(const QVector<double>& t, double x) {
+    int n = t.size();
+    auto it = std::lower_bound(t.begin(), t.end(), x);
+    int i = int(it - t.begin());
+    if (i >= n) {
+        return n - 1;
+    }
+    if (i > 0 && (x - t[i - 1]) <= (t[i] - x)) {
+        return i - 1;
+    }
+    return i;
+}
+
 }  // namespace
 
 ChartView::ChartView(QVector<DataGroup*>* groups, Recorder* recorder, QWidget* parent)
@@ -86,11 +103,24 @@ ChartView::ChartView(QVector<DataGroup*>* groups, Recorder* recorder, QWidget* p
 
 // ── 坐标变换 ────────────────────────────────────────────────────
 
+// 字号随窗口高度自适应：全屏放大时图表变大，固定像素字号会显得过小。
+// 基准高度（FONT_REF_H）下倍率为 1，默认窗口显示与原来完全一致；
+// 下限 1 保证缩小窗口时字号不会比原来更小。
+double ChartView::fontScale() const {
+    const double k = height() / FONT_REF_H;
+    return k < 1.0 ? 1.0 : (k > FONT_SCALE_MAX ? FONT_SCALE_MAX : k);
+}
+
+int ChartView::scaleFontPx(int nominal) const {
+    return qRound(nominal * fontScale());
+}
+
 QRect ChartView::plotRect() const {
+    const double fs = fontScale();
     int l = qRound(width() * 0.085);
     int r = qRound(width() * 0.085);
-    int t = qMax(34, qRound(height() * 0.06));
-    int b = qMax(44, qRound(height() * 0.12));
+    int t = qMax(qRound(34 * fs), qRound(height() * 0.06));
+    int b = qMax(qRound(44 * fs), qRound(height() * 0.12));
     return QRect(l, t, width() - l - r, height() - t - b);
 }
 
@@ -267,6 +297,28 @@ void ChartView::drawStair(QPainter& p, const XY& xy, const QColor& color,
     p.drawPolyline(poly);
 }
 
+// 取可见窗口 [m_x0, m_x1] 内的曲线数据。
+// 窗口点数不超过 DISPLAY_MAX_PTS 时直接切片原始数据绘制：全范围 min/max
+// 抽稀放大后每个桶只剩两个包络极值点，连出来是乱跳的锯齿；窗口切片
+// 还原真实波形。超过阈值（未放大/全览）退回全范围抽稀缓存路径，
+// 行为与原来完全一致（times 单调递增，二分定位 O(log n)）。
+XY ChartView::visibleXY(DecCache& cache, const QString& key,
+                        const QVector<double>& t, const QVector<int>& y) const {
+    int i0 = int(std::lower_bound(t.begin(), t.end(), m_x0) - t.begin());
+    int i1 = int(std::upper_bound(t.begin(), t.end(), m_x1) - t.begin());
+    if (i1 > i0 && i1 - i0 <= DISPLAY_MAX_PTS) {
+        XY r;
+        r.t.reserve(i1 - i0);
+        r.y.reserve(i1 - i0);
+        for (int i = i0; i < i1; ++i) {
+            r.t.append(t[i]);
+            r.y.append(double(y[i]));
+        }
+        return r;
+    }
+    return cachedXY(cache, key, t, y);
+}
+
 void ChartView::drawGrid(QPainter& p) {
     QRect plot = plotRect();
     QColor c = theme::BORDER;
@@ -335,9 +387,10 @@ void ChartView::drawPassAnnotations(QPainter& p) {
     if (!g || g->passes.isEmpty()) return;
     const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
     QRect plot = plotRect();
+    const double fs = fontScale();
 
     QFont f = p.font();
-    f.setPixelSize(10);  // ~7.5pt
+    f.setPixelSize(scaleFontPx(10));
     p.setFont(f);
     QFontMetrics fm(f);
     QColor c = pal.accent;
@@ -353,7 +406,7 @@ void ChartView::drawPassAnnotations(QPainter& p) {
         QString txt = QStringLiteral("#%1").arg(pass.no);
         int w = fm.horizontalAdvance(txt);
         int h = fm.height();
-        p.drawText(QRectF(x - w / 2.0, plot.top() - 4 - h, w, h),
+        p.drawText(QRectF(x - w / 2.0, plot.top() - qRound(4 * fs) - h, w, h),
                    Qt::AlignHCenter | Qt::AlignTop, txt);
     }
 }
@@ -373,9 +426,16 @@ void ChartView::drawOverlay(QPainter& p) {
         int i0 = pass.i0;
         int i1 = pass.i1 + 1;
         if (i1 > g->times.size()) i1 = g->times.size();
+        // 只取可见窗口（道次相对时间 [m_x0, m_x1]）内的点：深放大时
+        // 画出窗口内真实波形，而不是整道抽稀后的包络锯齿。
+        // 窗口小时 decimate 原样直通；窗口大（全览）时行为与原来一致。
+        int lo = int(std::lower_bound(g->times.begin() + i0, g->times.begin() + i1,
+                                      pass.t0 + m_x0) - g->times.begin());
+        int hi = int(std::upper_bound(g->times.begin() + i0, g->times.begin() + i1,
+                                      pass.t0 + m_x1) - g->times.begin());
         QVector<double> tt;
         QVector<int> pp, ff;
-        for (int i = i0; i < i1; ++i) {
+        for (int i = lo; i < hi; ++i) {
             tt.append(g->times[i] - pass.t0);
             pp.append(g->pos[i]);
             ff.append(g->force[i]);
@@ -388,13 +448,14 @@ void ChartView::drawOverlay(QPainter& p) {
 
 void ChartView::drawAxes(QPainter& p) {
     QRect plot = plotRect();
+    const double fs = fontScale();
 
     p.setPen(QPen(theme::BORDER, 1));
     p.setBrush(Qt::NoBrush);
     p.drawRect(plot);
 
     QFont f = p.font();
-    f.setPixelSize(11);
+    f.setPixelSize(scaleFontPx(11));
     p.setFont(f);
     QFontMetrics fm(f);
     p.setPen(theme::C_DIM);
@@ -428,23 +489,27 @@ void ChartView::drawAxes(QPainter& p) {
 
     // X 轴标签
     int xlw = fm.horizontalAdvance(m_xlabel);
-    p.drawText(QPointF(plot.center().x() - xlw / 2.0, plot.bottom() + 3 + fm.ascent() + 22),
+    p.drawText(QPointF(plot.center().x() - xlw / 2.0,
+                       plot.bottom() + 3 + fm.ascent() + qRound(22 * fs)),
                m_xlabel);
 
     // Y 轴标签（旋转）
     QFont yf = p.font();
-    yf.setPixelSize(12);
+    yf.setPixelSize(scaleFontPx(12));
     p.setFont(yf);
     p.setPen(theme::C_DIM);
+    QFontMetrics yfm(yf);
     p.save();
-    p.translate(plot.left() - 40, plot.center().y());
+    p.translate(plot.left() - qRound(40 * fs), plot.center().y());
     p.rotate(-90);
-    p.drawText(QRectF(-60, -8, 120, 16), Qt::AlignCenter, QStringLiteral("PosR"));
+    p.drawText(QRectF(-60, -yfm.height() / 2.0, 120, yfm.height()),
+               Qt::AlignCenter, QStringLiteral("PosR"));
     p.restore();
     p.save();
-    p.translate(plot.right() + 40, plot.center().y());
+    p.translate(plot.right() + qRound(40 * fs), plot.center().y());
     p.rotate(90);
-    p.drawText(QRectF(-60, -8, 120, 16), Qt::AlignCenter, QStringLiteral("ForceR"));
+    p.drawText(QRectF(-60, -yfm.height() / 2.0, 120, yfm.height()),
+               Qt::AlignCenter, QStringLiteral("ForceR"));
     p.restore();
 }
 
@@ -501,7 +566,7 @@ void ChartView::drawLegend(QPainter& p) {
     if (entries.isEmpty()) return;
 
     QFont f = p.font();
-    f.setPixelSize(11);
+    f.setPixelSize(scaleFontPx(11));
     p.setFont(f);
     QFontMetrics fm(f);
     int lineH = fm.height() + 4;
@@ -552,7 +617,7 @@ void ChartView::drawLegend(QPainter& p) {
 void ChartView::drawHover(QPainter& p) {
     QRect plot = plotRect();
     QFont f = p.font();
-    f.setPixelSize(11);
+    f.setPixelSize(scaleFontPx(11));
     p.setFont(f);
     QFontMetrics fm(f);
 
@@ -617,6 +682,9 @@ void ChartView::drawHover(QPainter& p) {
 
 void ChartView::paintEvent(QPaintEvent*) {
     QPainter p(this);
+    // 线条抗锯齿：对齐 Python 版 matplotlib（Agg）的渲染观感，
+    // 消除放大后斜线段的像素阶梯毛刺
+    p.setRenderHint(QPainter::Antialiasing, true);
     p.fillRect(rect(), theme::BG);
     QRect plot = plotRect();
     p.fillRect(plot, theme::BG);
@@ -629,25 +697,25 @@ void ChartView::paintEvent(QPaintEvent*) {
         drawOverlay(p);
     } else {
         if (m_showMonitor && m_recorder) {
-            drawLine(p, cachedXY(m_recorder->monDec, QStringLiteral("pos"),
-                                 m_recorder->monTimes, m_recorder->monPos),
+            drawLine(p, visibleXY(m_recorder->monDec, QStringLiteral("pos"),
+                                  m_recorder->monTimes, m_recorder->monPos),
                      theme::C_MONITOR, Qt::SolidLine, 1.0, false, 0.6);
-            drawLine(p, cachedXY(m_recorder->monDec, QStringLiteral("force"),
-                                 m_recorder->monTimes, m_recorder->monForce),
+            drawLine(p, visibleXY(m_recorder->monDec, QStringLiteral("force"),
+                                  m_recorder->monTimes, m_recorder->monForce),
                      theme::C_MONITOR, Qt::DashLine, 1.0, true, 0.6);
         }
         for (DataGroup* g : *m_groups) {
             const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
             if (g->showPos) {
-                drawLine(p, cachedXY(g->decCache, QStringLiteral("pos"), g->times, g->pos),
+                drawLine(p, visibleXY(g->decCache, QStringLiteral("pos"), g->times, g->pos),
                          pal.pos, Qt::SolidLine, 1.6, false, 0.9);
             }
             if (g->showForce) {
-                drawLine(p, cachedXY(g->decCache, QStringLiteral("force"), g->times, g->force),
+                drawLine(p, visibleXY(g->decCache, QStringLiteral("force"), g->times, g->force),
                          pal.force, Qt::DashLine, 1.6, true, 0.9);
             }
             if (m_showEsPos && g->hasEs) {
-                drawStair(p, cachedXY(g->decCache, QStringLiteral("es"), g->times, g->esPos),
+                drawStair(p, visibleXY(g->decCache, QStringLiteral("es"), g->times, g->esPos),
                           pal.pos, 1.0, 0.45);
             }
         }
@@ -754,17 +822,18 @@ void ChartView::computeHover(double xm) {
     m_hoverX = xm;
     m_hoverMarks.clear();
     m_hoverLines.clear();
-    m_hoverLines << QStringLiteral(" t ≈ %.3f s").arg(xm);
+
+    // 头部时间与下方读数保持一致：下方读的是"最近采样点"的值，
+    // 头部就显示该采样点的时间（取参考组口径，与道次标注一致）。
+    // 无参考组数据时退回鼠标原始时间。
+    DataGroup* rg = refGroup();
+    double dispT = xm;
 
     for (DataGroup* g : *m_groups) {
         if (g->times.isEmpty()) continue;
-        int idx = 0;
-        double best = std::numeric_limits<double>::infinity();
-        for (int i = 0; i < g->times.size(); ++i) {
-            double d = std::fabs(g->times[i] - xm);
-            if (d < best) { best = d; idx = i; }
-        }
+        int idx = nearestIndex(g->times, xm);
         double tx = g->times[idx];
+        if (g == rg) dispT = tx;
         const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
 
         HoverMark m;
@@ -780,7 +849,19 @@ void ChartView::computeHover(double xm) {
 
         if (!g->passes.isEmpty()) {
             int pn = (idx < g->passNo.size()) ? g->passNo[idx] : 0;
-            QString tag = pn ? QStringLiteral("第%1道").arg(pn) : QStringLiteral("非打磨段");
+            QString tag;
+            if (pn) {
+                tag = QStringLiteral("第%1道").arg(pn);
+            } else {
+                // PassNo==0：道次之间是上一道的反向返回段；
+                // 仅首道之前（无前一道）仍称"非打磨段"
+                int prev = -1;
+                for (int k = g->passes.size() - 1; k >= 0; --k) {
+                    if (g->passes[k].i1 < idx) { prev = k; break; }
+                }
+                tag = (prev >= 0) ? QStringLiteral("第%1道 返回段").arg(g->passes[prev].no)
+                                  : QStringLiteral("非打磨段");
+            }
             m_hoverLines << QStringLiteral(" %1  [%2]").arg(pal.label, tag);
         }
         if (g->showPos) {
@@ -800,6 +881,10 @@ void ChartView::computeHover(double xm) {
                             .arg(pal.label, theme::formatThousands(es), errs);
         }
     }
+
+    // 用 %1 占位符 + 'f' 格式（Qt 的 arg 不识别 printf 风格 %.3f，
+    // 原写法导致显示字面量 "%.3f" 并刷屏 "Argument missing" 警告）
+    m_hoverLines.prepend(QStringLiteral(" t ≈ %1 s").arg(dispT, 0, 'f', 3));
     update();
 }
 

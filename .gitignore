@@ -13,3 +13,6 @@ CMakeLists.txt.user
 # 系统临时文件
 Thumbs.db
 *.tmp
+
+# 本地部署产物
+dist/

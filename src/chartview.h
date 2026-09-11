@@ -47,6 +47,8 @@ protected:
 private:
     // 布局与坐标变换
     QRect plotRect() const;
+    double fontScale() const;             // 字号随窗口高度放大的倍率（≥1）
+    int scaleFontPx(int nominal) const;   // 基准字号 → 当前字号
     double xToPx(double x) const;
     double y1ToPx(double y) const;
     double y2ToPx(double y) const;
@@ -73,6 +75,10 @@ private:
                   Qt::PenStyle style, double lw, bool y2, double alpha);
     void drawStair(QPainter& p, const XY& xy, const QColor& color,
                    double lw, double alpha);
+    // 可见窗口 [m_x0, m_x1] 内的曲线数据：窗口点数 ≤ DISPLAY_MAX_PTS 时
+    // 直接用原始点切片（放大后还原真实波形），否则走全范围抽稀缓存路径
+    XY visibleXY(DecCache& cache, const QString& key,
+                 const QVector<double>& t, const QVector<int>& y) const;
 
     // 交互
     void startPan(const QPointF& pos);
