@@ -100,6 +100,12 @@ CSV 列格式：
 time_s,PosR,ForceR,PassNo,EsPos
 ```
 
+## KRL 侧打磨程序
+
+KRLmonitor 对接的机器人侧打磨程序（含全局打磨程序 `CuMoAllPart1/Part2`）快照见
+[`krl/`](krl/README.md)，其程序结构、时序语义、`ECM` 通讯字段映射与上位机待办见
+[docs/KRL_GLOBAL_PROGRAM.md](docs/KRL_GLOBAL_PROGRAM.md)。
+
 ## 部署
 
 程序构建完成后不能只复制 `KRLmonitor.exe`，还需要 Qt 运行库、平台插件和 MSVC 运行库。完整步骤见：

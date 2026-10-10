@@ -1,0 +1,31 @@
+&ACCESS RVO
+&REL 1
+&PARAM DISKPATH = KRC:\R1\MinShi260921
+DEF  MinShiLib ( )
+  
+END
+;---------------------------------------------------------------
+; CU MO CHU SHI HUA   (CuMo1 .. CuMo8)
+;---------------------------------------------------------------
+GLOBAL DEF MoInitCu()
+   ECM_Enable = TRUE
+   Ofs        = Ofs_set          ;dan ci xia jiang ju li
+   Sspeed     = Sspeed_set
+   ESforce    = Cu_ESforce_set
+   ESload     = ESload_set
+   ESmode     = ESmode_set
+   ESpos      = Cu_ESpos_set      ;= InitPOS
+   RecordOn   = FALSE
+END
+;---------------------------------------------------------------
+; XI MO CHU SHI HUA   (XiMo1_1 .. XiMo8_1)
+;---------------------------------------------------------------
+GLOBAL DEF MoInitXi()
+   ECM_Enable   = TRUE
+   Sspeed       = Sspeed_set
+   ESforce      = Xi_ESforce_set
+   ESload       = ESload_set
+   ESmode       = ESmode_set
+   ESpos        = Xi_ESpos_set      ;= InitPOS
+   RecordOn     = FALSE
+END

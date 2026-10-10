@@ -1,2 +1,5 @@
 # 统一行尾：仓库内 LF，Windows 检出 CRLF
 * text=auto
+
+# KRL 侧程序为现场原样快照，禁止行尾/编码转换
+krl/** -text

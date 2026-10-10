@@ -1,0 +1,26 @@
+GLOBAL DEFFCT INT ToSigned(Signals_in : IN)
+   DECL INT Signals_in,Res
+   Res = Signals_in
+   IF Res > 32767 THEN
+    Res = Res - 65536
+  ELSE
+    Res = Res
+  ENDIF
+
+  RETURN Res
+ENDFCT
+
+GLOBAL DEFFCT INT ToUnSigned(SetNUM :IN)
+   DECL INT SetNUM,Res
+   Res = SetNUM
+   IF Res < 0 THEN
+    Res = Res + 65536
+  ELSE
+    Res = Res
+  ENDIF
+
+  RETURN Res
+ENDFCT
+;DECL POS xidao2
+;DECL POS laser3
+;DECL E6POS Left,Right,PA,PB,OFFSET;

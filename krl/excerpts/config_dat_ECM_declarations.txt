@@ -1,0 +1,179 @@
+; Userdefined Variables 
+
+
+
+BOOL ECM_Enable=FALSE
+INT SetForce=30
+INT ActForce
+INT SetSpeed=3000
+INT MA_Step=0
+INT EHA_Z_Step=0
+
+BOOL MA_ModuleOK=TRUE
+BOOL EHA_Z_ModuleOK=TRUE
+DECL INT DIS1,DIS2
+
+DECL REAL RES_Z,L_Z,R_Z
+INT ECMSTEP=0
+
+
+;==================================
+;AES Control via modbus
+;==================================
+
+SIGNAL STATUS_R $IN[3001]  TO $IN[3016]
+SIGNAL Rotation_R $IN[3017]  TO $IN[3032]
+SIGNAL Force_R $IN[3033]  TO $IN[3048]
+SIGNAL Pos_R $IN[3049]  TO $IN[3064]
+SIGNAL Mode_R $IN[3065]  TO $IN[3080]
+SIGNAL Err_R $IN[3081]  TO $IN[3096]
+SIGNAL Tempture_R $IN[3097]  TO $IN[3112]
+
+
+SIGNAL Controlword $OUT[3001]  TO $OUT[3016]
+SIGNAL Speed_S $OUT[3017]  TO $OUT[3032]
+SIGNAL Force_S $OUT[3033]  TO $OUT[3048]
+SIGNAL Pos_S $OUT[3049]  TO $OUT[3064]
+SIGNAL Mode_S $OUT[3065]  TO $OUT[3080]
+SIGNAL TouchForce_S $OUT[3081]  TO $OUT[3096]
+SIGNAL RampTime_S $OUT[3097]  TO $OUT[3112]
+SIGNAL LoadWeight_S $OUT[3113]  TO $OUT[3128]
+
+;==================================
+;EHA Control via Ethercat
+;==================================
+
+SIGNAL CONTROLWORD_ETH $OUT[2600]  TO $OUT[2615]
+SIGNAL MODE_ETH $OUT[2616]  TO $OUT[2623]
+SIGNAL POSITION_S_ETH $OUT[2624]  TO $OUT[2655]
+SIGNAL FORCE_S_ETH $OUT[2656]  TO $OUT[2671]
+SIGNAL WEIGHT_S_ETH $OUT[2672]  TO $OUT[2687]
+
+SIGNAL ERRCODE_ETH $IN[2600]  TO $IN[2615]
+SIGNAL POSITION_R_ETH $IN[2616]  TO $IN[2647]
+SIGNAL STATUS_R_ETH $IN[2648]  TO $IN[2663]
+SIGNAL FORCE_R_ETH $IN[2664]  TO $IN[2679]
+
+DECL INT ERforce,ERpos,ERerrcode,ERstatus
+DECL INT ESfunc=0
+DECL INT ESforce=25
+DECL INT ESpos=0
+DECL INT ESmode=4
+DECL INT ESload=177
+
+;==================================
+;MINSHI
+;==================================
+DECL INT MonRef=1014 ; ??????????????????????????????
+DECL INT PassNo=0
+DECL BOOL RecordOn=TRUE
+DECL INT nPassNo=0
+DECL INT nEsPos=1020
+DECL BOOL bRecordOn=TRUE
+
+;Chu Shi Hua - gong yong
+DECL INT Ofs_set=30
+DECL REAL Ofs=30.0000 ;CuMo mei dao xia jiang ju li (gong zuo bian liang, chu shi zhi = Ofs_set)
+DECL INT Sspeed_set=0
+DECL INT ESmode_set=2
+DECL INT ESload_set=177
+
+;Chu Shi Hua - CuMo
+DECL INT Cu_ESforce_set=100
+DECL INT Cu_ESpos_set=200
+;Chu Shi Hua - XiMo
+DECL INT Xi_ESforce_set=25
+DECL INT Xi_ESpos_set=0
+
+SIGNAL Laser_GI1 $IN[3500]  TO $IN[3515]
+SIGNAL Laser_GI2 $IN[3516]  TO $IN[3531]
+DECL REAL Laser
+DECL INT status,Rrotation,Rforce,Rposition,Rmode,RERR,Rtemp ; 
+DECL INT Sfunc=1
+DECL INT Sspeed=0
+DECL INT Sforce=-100
+DECL INT Spos=950
+DECL INT Smode=2
+DECL INT STouchF=0
+DECL INT Sramp=0
+DECL INT Sload=170
+
+;ECM MINSHI LVDT
+
+SIGNAL LVDT1 $IN[3129]  TO $IN[3144]
+
+SIGNAL LVDT2 $IN[3161]  TO $IN[3176]
+
+SIGNAL LVDT3 $IN[3193]  TO $IN[3208]
+
+DECL REAL GLOBAL_Measure_Height
+DECL INT GLOBAL_LOOPCOUNT
+DECL REAL Weld_misalignment
+DECL REAL GLOBAL_RES_Z
+DECL REAL GLOBAL_TilitC
+DECL INT GLOBAL_Poslimit
+DECL REAL GLOBAL_RES
+
+;CuMoAllpart
+
+DECL REAL Baseheight1
+DECL REAL Baseheight2
+DECL REAL Baseheight3
+DECL REAL Baseheight4
+DECL REAL Baseheight5
+DECL REAL Baseheight6
+DECL REAL Baseheight7
+DECL REAL Baseheight8
+DECL REAL Cuobian1
+DECL REAL Cuobian2
+DECL REAL Cuobian3
+DECL REAL Cuobian4
+DECL REAL Cuobian5
+DECL REAL Cuobian6
+DECL REAL Cuobian7
+DECL REAL Cuobian8
+DECL REAL Measure_Height1
+DECL REAL Measure_Height2
+DECL REAL Measure_Height3
+DECL REAL Measure_Height4
+DECL REAL Measure_Height5
+DECL REAL Measure_Height6
+DECL REAL Measure_Height7
+DECL REAL Measure_Height8
+
+;XiMoAllpart
+
+DECL REAL Baseheight1_2
+DECL REAL Baseheight2_2
+DECL REAL Baseheight3_2
+DECL REAL Baseheight4_2
+DECL REAL Baseheight5_2
+DECL REAL Baseheight6_2
+DECL REAL Baseheight7_2
+DECL REAL Baseheight8_2
+DECL REAL Cuobian1_2
+DECL REAL Cuobian2_2
+DECL REAL Cuobian3_2
+DECL REAL Cuobian4_2
+DECL REAL Cuobian5_2
+DECL REAL Cuobian6_2
+DECL REAL Cuobian7_2
+DECL REAL Cuobian8_2
+DECL REAL Measure_Height1_2
+DECL REAL Measure_Height2_2
+DECL REAL Measure_Height3_2
+DECL REAL Measure_Height4_2
+DECL REAL Measure_Height5_2
+DECL REAL Measure_Height6_2
+DECL REAL Measure_Height7_2
+DECL REAL Measure_Height8_2
+
+REAL LVDT_R1,LVDT_R2,LVDT_R3
+DECL REAL L1BaseF=1.29000
+DECL REAL L2BaseF=3.59000 ;da pan
+;DECL REAL L2BaseF = 3.49000 ;xiao pan +0.12
+DECL REAL L3BaseF=1.01500
+;buchang jizhun 
+DECL REAL AVG1=3.36750
+DECL REAL AVG2=3.73000
+DECL REAL AVG3=3.63500
