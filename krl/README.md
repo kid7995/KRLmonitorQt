@@ -10,7 +10,9 @@
 
 | 路径 | 内容 |
 |---|---|
-| `MinShi260921/CuMoAllPart1.src` `.dat` | 全局粗磨程序，工位 1–4（点号 P1x–P4x） |
+| `MinShi261010/` | **全局打磨程序（已接入 PassNo 负数标记，可回拷 WorkVisual）**，见该目录 README |
+| `MinShi261010/original/` | 上述程序的原始上传基线（对比 / 回退用） |
+| `MinShi260921/CuMoAllPart1.src` `.dat` | 上一版全局粗磨程序，工位 1–4（历史快照） |
 | `MinShi260921/CuMoAllPart2.src` `.dat` | 全局粗磨程序，工位 5–8（点号 P5x–P8x） |
 | `MinShi260921/CuMo1.src` | 单工位样例（独立版），用于与 All 版对照 |
 | `MinShi260921/MinShiLib.src` | `MoInitCu()` / `MoInitXi()` 公共初始化 |
