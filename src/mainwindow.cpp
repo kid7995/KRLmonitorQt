@@ -156,6 +156,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildToolbar();
     buildZoomBar();
     buildGroupsPanel();
+    buildSeamPanel();
     buildValueBar();
     buildChart();
 
@@ -329,6 +330,197 @@ void MainWindow::buildGroupsPanel() {
     refreshGroupsPanel();
 }
 
+// ── 焊缝（工位）面板 ────────────────────────────────────────────
+//
+// KRL 侧用 PassNo 的负数标记标出"焊缝号 + 阶段"（见 src/station.h）：
+// 记录中依次点亮各焊缝卡片，卡上给出该焊缝的实时数据与打磨次数。
+
+int MainWindow::seamPanelGroupIdx() const {
+    if (m_recorder->recGroupIdx >= 0 && m_recorder->recGroupIdx < m_groups.size()) {
+        return m_recorder->recGroupIdx;
+    }
+    return refGroupIdx();
+}
+
+void MainWindow::buildSeamPanel() {
+    auto* outer = new QWidget(this);
+    outer->setStyleSheet(QStringLiteral(
+        "background-color:%1;border-top:1px solid %2;border-bottom:1px solid %2;")
+        .arg(theme::PANEL.name(), theme::BORDER.name()));
+    auto* v = new QVBoxLayout(outer);
+    v->setContentsMargins(10, 5, 10, 7);
+    v->setSpacing(4);
+
+    auto* hdr = new QHBoxLayout();
+    auto* title = new QLabel(QStringLiteral("🧲  焊缝（工位）实时数据"), outer);
+    title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
+                         .arg(theme::C_INFO_HI.name()));
+    hdr->addWidget(title);
+    m_seamHint = new QLabel(QString(), outer);
+    m_seamHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
+    hdr->addWidget(m_seamHint);
+    hdr->addStretch();
+    auto* legend = new QLabel(QStringLiteral("焊缝号由 KRL 侧 PassNo 负数标记给出（-k 检测 / -(10+k) 打磨间隙）"), outer);
+    legend->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
+    hdr->addWidget(legend);
+    v->addLayout(hdr);
+
+    m_seamWidget = new QWidget(outer);
+    m_seamLayout = new QHBoxLayout(m_seamWidget);
+    m_seamLayout->setContentsMargins(0, 0, 0, 0);
+    m_seamLayout->setSpacing(8);
+    v->addWidget(m_seamWidget);
+
+    m_rootLayout->addWidget(outer);
+    refreshSeamPanel();
+}
+
+void MainWindow::refreshSeamPanel() {
+    const int gi = seamPanelGroupIdx();
+    QVector<int> seamList;
+    if (gi >= 0 && gi < m_groups.size()) {
+        for (const SeamStat& s : m_groups[gi]->seam.seams) {
+            seamList.append(s.seam);
+        }
+    }
+    std::sort(seamList.begin(), seamList.end());
+
+    QString sig;
+    for (int seam : seamList) {
+        sig += QStringLiteral("%1,").arg(seam);
+    }
+    if (gi == m_seamCardsGroup && sig == m_seamCardsSig) {
+        updateSeamCards();      // 集合没变，只刷新文字
+        return;
+    }
+    m_seamCardsGroup = gi;
+    m_seamCardsSig = sig;
+    m_seamCards.clear();
+
+    QLayoutItem* item;
+    while ((item = m_seamLayout->takeAt(0)) != nullptr) {
+        if (item->widget()) item->widget()->deleteLater();
+        delete item;
+    }
+
+    if (seamList.isEmpty()) {
+        const QString msg = (gi >= 0 && gi < m_groups.size())
+            ? QStringLiteral("该数据组不含焊缝标记（旧程序 / 旧 CSV：PassNo 全为非负数）")
+            : QStringLiteral("开始监控或载入数据后，这里显示各焊缝（工位）的实时数据与打磨次数");
+        auto* lbl = new QLabel(msg, m_seamWidget);
+        lbl->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
+        m_seamLayout->addWidget(lbl);
+        m_seamLayout->addStretch();
+        m_seamHint->setText(QString());
+        return;
+    }
+
+    m_seamHint->setText(QStringLiteral("  共 %1 个焊缝").arg(seamList.size()));
+
+    for (int seam : seamList) {
+        const QColor accent = theme::GROUP_PALETTES[(seam - 1) % 4].accent;
+        auto* card = new QFrame(m_seamWidget);
+        card->setStyleSheet(QStringLiteral(
+            "QFrame{background-color:%1;border:1px solid %2;border-left:3px solid %3;border-radius:6px;}")
+            .arg(theme::BG.name(), theme::BORDER.name(), accent.name()));
+        auto* cv = new QVBoxLayout(card);
+        cv->setContentsMargins(9, 6, 8, 7);
+        cv->setSpacing(3);
+
+        SeamCardWidgets w;
+        w.card = card;
+        w.title = new QLabel(QStringLiteral("焊缝 %1").arg(seam), card);
+        w.title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
+                               .arg(accent.name()));
+        cv->addWidget(w.title);
+        w.state = new QLabel(QStringLiteral("—"), card);
+        cv->addWidget(w.state);
+        w.pass = new QLabel(QStringLiteral("—"), card);
+        w.pass->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_TEXT.name()));
+        cv->addWidget(w.pass);
+        w.count = new QLabel(QStringLiteral("正常 0 道 · 补充 0 次"), card);
+        cv->addWidget(w.count);
+        w.values = new QLabel(QStringLiteral("PosR  —\nForceR  —\nESpos  —"), card);
+        w.values->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
+        cv->addWidget(w.values);
+
+        m_seamLayout->addWidget(card, 1);
+        m_seamCards.insert(seam, w);
+    }
+    m_seamLayout->addStretch();
+    updateSeamCards();
+}
+
+void MainWindow::updateSeamCards() {
+    const int gi = seamPanelGroupIdx();
+    if (gi < 0 || gi >= m_groups.size()) {
+        return;
+    }
+    DataGroup* g = m_groups[gi];
+
+    for (auto it = m_seamCards.begin(); it != m_seamCards.end(); ++it) {
+        const SeamStat* s = g->seam.find(it.key());
+        if (!s) {
+            continue;
+        }
+        SeamCardWidgets& w = it.value();
+
+        QString st = QStringLiteral("○ 已完成");
+        QColor stc = theme::C_DIM;
+        if (g->live) {
+            if (s->live) {
+                const bool grinding = (g->seam.curPhase == SeamPhase::Grind
+                                       || g->seam.curPhase == SeamPhase::GrindGap
+                                       || g->seam.curPhase == SeamPhase::Transfer);
+                st = grinding ? QStringLiteral("● 打磨中") : QStringLiteral("● 检测中");
+                stc = grinding ? theme::C_REC : theme::C_WARN_HI;
+            } else if (s->detected && s->curPass == 0) {
+                st = QStringLiteral("○ 待打磨");
+            }
+        }
+        w.state->setText(st);
+        w.state->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;font-weight:bold;")
+                               .arg(stc.name()));
+
+        QString passTxt = QStringLiteral("—");
+        if (s->curPass > 0) {
+            passTxt = QStringLiteral("第 %1 遍").arg(s->curPass);
+            if (s->retryNow) {
+                passTxt += QStringLiteral("（补充打磨）");
+            }
+        }
+        w.pass->setText(passTxt);
+
+        w.count->setText(QStringLiteral("正常 %1 道 · 补充 %2 次").arg(s->normalN).arg(s->retryN));
+        w.count->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;")
+                               .arg(s->retryN ? theme::C_WARN_HI.name() : theme::C_PASS.name()));
+
+        QString vals = QStringLiteral("PosR  %1\nForceR  %2\nESpos  %3")
+                           .arg(theme::formatThousands(s->lastPos),
+                                theme::formatThousands(s->lastForce),
+                                theme::formatThousands(s->lastEs));
+        if (s->detected) {
+            vals += QStringLiteral("\n基准  %1（检测）").arg(theme::formatThousands(s->detectEs));
+        }
+        w.values->setText(vals);
+    }
+}
+
+QString MainWindow::seamSummary(const DataGroup& g) const {
+    QStringList parts;
+    for (const SeamStat& s : g.seam.seams) {
+        QString t = QStringLiteral("焊缝%1 %2道").arg(s.seam).arg(s.normalN);
+        if (s.retryN > 0) {
+            t += QStringLiteral("+补%1").arg(s.retryN);
+        }
+        parts << t;
+    }
+    if (parts.isEmpty()) {
+        return QStringLiteral("%1 道").arg(g.passes.size());
+    }
+    return parts.join(QStringLiteral("，"));
+}
+
 void MainWindow::buildValueBar() {
     auto* bar = new QWidget(this);
     bar->setStyleSheet(QStringLiteral("background-color:%1;").arg(theme::BG.name()));
@@ -376,6 +568,12 @@ void MainWindow::buildValueBar() {
                                .arg(theme::C_PASS.name()));
     h->addWidget(m_passLabel);
     h->addSpacing(20);
+
+    m_seamContext = new QLabel(QString(), bar);
+    m_seamContext->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
+                                 .arg(theme::C_INFO_HI.name()));
+    h->addWidget(m_seamContext);
+    h->addSpacing(16);
 
     m_recLabel = new QLabel(QStringLiteral("○ 未监听"), bar);
     setRecState(QStringLiteral("○ 未监听"), theme::C_DIM);
@@ -538,6 +736,7 @@ int MainWindow::addGroup(const QString& name, const QVector<double>& times,
     g->passNo = passNo;
     g->esPos = esPos;
     g->passes = computePasses(g->times, g->passNo);
+    rebuildSeamStats(*g);
     g->hasEs = !g->esPos.isEmpty() &&
                std::any_of(g->esPos.begin(), g->esPos.end(), [](int v) { return v != 0; });
     g->paletteIdx = nextPaletteIdx();
@@ -669,7 +868,7 @@ void MainWindow::onTick() {
                                 : theme::formatThousands(err);
         m_errValue->setText(errs);
 
-        if (res.lastPass) {
+        if (res.lastPass > 0) {
             m_passLabel->setText(QStringLiteral("⟩ 第 %1 道").arg(res.lastPass));
             m_passLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
                                        .arg(theme::C_PASS.name()));
@@ -700,6 +899,17 @@ void MainWindow::onTick() {
         }
     }
 
+    // 焊缝（工位）上下文与卡片
+    if (res.lastSeam > 0) {
+        QString t = QStringLiteral("焊缝 %1/8 · %2").arg(res.lastSeam).arg(seamPhaseLabel(res.lastPhase));
+        if (res.lastPass > 0) {
+            t += QStringLiteral("  第 %1 遍").arg(res.lastPass);
+        }
+        m_seamContext->setText(t);
+    } else if (res.hasLastVal) {
+        m_seamContext->setText(QStringLiteral("焊缝 —/8 · 无标记"));
+    }
+
     // 记录状态指示灯
     if (m_recorder->recGroupIdx >= 0) {
         setRecState(QStringLiteral("🔴 记录中"), theme::C_REC);
@@ -713,12 +923,18 @@ void MainWindow::onTick() {
         refreshGroupsPanel();
     }
 
+    if (anyTouched || res.structDirty || res.seamDirty || res.passDirty) {
+        refreshSeamPanel();
+    }
+
     if (anyTouched || res.structDirty || res.monDirty || res.passDirty) {
         m_chart->update();
     }
 
     // 下降沿：按"完成后暂停"开关决定冻结还是继续监听
     if (res.sealed) {
+        const QString summary = res.sealedGroup ? seamSummary(*res.sealedGroup)
+                                                : QStringLiteral("%1 道").arg(res.sealedPasses);
         if (m_autoPause) {
             m_paused = true;
             m_server->setArmed(false);
@@ -867,6 +1083,11 @@ void MainWindow::onClear() {
     for (DataGroup* g : m_groups) delete g;
     m_groups.clear();
     m_chart->setRefGroupIdx(-1);
+
+    m_seamCardsGroup = -2;
+    m_seamCardsSig.clear();
+    refreshSeamPanel();
+    if (m_seamContext) m_seamContext->setText(QString());
 
     refreshGroupsPanel();
     m_chart->relimAll();

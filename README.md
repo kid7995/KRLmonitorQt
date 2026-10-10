@@ -97,8 +97,25 @@ KUKA 侧连接本机 TCP `65002` 端口，并发送以下形式的帧：
 CSV 列格式：
 
 ```text
-time_s,PosR,ForceR,PassNo,EsPos
+time_s,PosR,ForceR,PassNo,EsPos,Seam
 ```
+
+### PassNo 负数编码（焊缝 / 工位）
+
+KRL 侧全局打磨程序（`MinShi261010` 起）用 `PassNo` 的符号与区间表达"阶段 + 焊缝号"：
+
+```text
+ PassNo = n > 0        打磨中：第 n 遍（补充打磨 = 编号跳增）
+ PassNo = 0            未标记（旧程序 / 旧 CSV）
+ PassNo = -(k)         检测阶段：正在检测焊缝 k        k = 1..8
+ PassNo = -(10 + k)    打磨阶段·非打磨段：焊缝 k 的道间返回 / 等待 / 接近
+ PassNo = -(20 + k)    工位间转移（预留）
+ PassNo = -99          收尾（预留）
+```
+
+上位机据此在"焊缝（工位）面板"中按焊缝显示实时数据、当前遍数与正常/补充打磨次数；
+旧程序（`PassNo` 全为非负数）自动退回无焊缝标记的显示方式。
+详见 [docs/KRL_GLOBAL_PROGRAM.md](docs/KRL_GLOBAL_PROGRAM.md) 与 [krl/MinShi261010/README.md](krl/MinShi261010/README.md)。
 
 ## KRL 侧打磨程序
 

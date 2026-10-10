@@ -155,7 +155,7 @@ ENDFCT
 6. **时间轴被空移主导**：工位间是 100% 快速 PTP 定位，工位内打磨是 0.02–0.06 m/s，两者时间尺度差异大。
 7. `$config.dat:900` 中 `DECL BOOL RecordOn=TRUE` 即**上电初值为 TRUE**。但 `MoInitCu()` 会先置 FALSE，所以正常流程仍会产生干净的一次上升沿；上位机 `arm()` 后首帧只采纳当前值、不造边沿，这一点两者一致、无需改造。
 
-## 6. 对 KRLmonitor 的影响（本分支待办）
+## 6. 对 KRLmonitor 的影响（工作项，落地状态见第 8 节）
 
 | 优先级 | 事项 | 相关位置 |
 |---|---|---|
@@ -173,3 +173,68 @@ ENDFCT
 3. 上位机是否需要按**工位**切分显示/导出，还是仍按"一次 RecordOn = 一组"？
 4. `$FLAG[10]` 由谁置位/复位（HMI？PLC？），与上位机的"开始监听"是否需要对时？
 5. 细磨（`XiMoAll*`）是否也要在同一分支内支持？其 `MonRef = Poslimit` 等语义需要单独确认。
+
+## 8. PassNo 负数编码（已实施，2026-10-10）
+
+原方案的"推断工位"存在一个硬伤：**现有协议里"检测段"和"打磨段道间返回"都是 `PassNo = 0`，信息上完全等价**，无法区分阶段。因此改为让 KRL 侧用 `PassNo` 的**符号与数值区间**同时表达"阶段 + 焊缝号"。
+
+### 8.1 编码约定
+
+```
+ PassNo = n > 0          打磨中：第 n 遍
+ PassNo = 0              未标记（兼容旧程序 / 旧 CSV）
+ PassNo = -(k)           检测阶段：正在检测焊缝 k        k = 1..8
+ PassNo = -(10 + k)      打磨阶段·非打磨段：焊缝 k 的道间返回 / 等待 / 接近
+ PassNo = -(20 + k)      工位间转移：正在转移到焊缝 k（预留）
+ PassNo = -99            程序收尾（预留）
+```
+
+- 焊缝号 **1–8 全局编号**（Part1 = 1–4，Part2 = 5–8）。
+- 补充打磨仍用正数的跳增编号（`TIMES+1+Retry+10`），上位机按"编号不连续"识别。
+- 未定义区间（如 `-9`、`-10`、`-19`、`-20`、`-29`）一律解码为"未标记"，避免误判。
+
+### 8.2 KRL 侧改动（已完成）
+
+见 `krl/MinShi261010/README.md`。每个焊缝段落 6 处左右：
+
+1. 检测段 `PassNo = 0` → `PassNo = -k`
+2. 检测段 `ESpos = InitLen<k>` 之后新增 `MonRef = ESpos`
+   —— 因为 `sps.sub` 上传的是 `MonRef`，而原程序检测段只写 `ESpos`，**检测结果（基准高度）此前根本传不出来**；补这一行后，检测段的 `ECM/EsPos` 即为该焊缝的 `InitLen`。
+3. 打磨段 `;---- Grinding station k ----` 之后新增 `PassNo = -(10+k)`
+4. 打磨段内各处 `PassNo = 0` → `PassNo = -(10+k)`
+5. `;---- Move to station k ... ----` 之后新增 `PassNo = -(10+k)`
+6. `PassNo = jN`（遍数）与补充打磨编号保持不变
+
+**不需要**改 `EthernetKRL` 的 `config.xml`（复用 `ECM/PassNo` 字段，不新增节点），也**不需要**改 `$config.dat`（`PassNo` 为 32 位有符号 INT，只写不读，改动不影响机器人逻辑）。
+
+### 8.3 上位机侧改动（已完成）
+
+| 位置 | 内容 |
+|---|---|
+| `src/station.h` / `station.cpp`（新增） | `decodePassNo()`：`PassNo` → 阶段 + 焊缝号，规则唯一来源 |
+| `src/config.h` | `SEAM_COUNT_MAX` / `SEAM_MARK_DETECT` / `SEAM_MARK_GRIND` / `SEAM_MARK_MOVE` / `SEAM_MARK_FINISH` |
+| `src/model.h` / `model.cpp` | `Pass::seam/retry`、`SeamStat`、`SeamTracker`（实时与离线共用）、`rebuildSeamStats()` |
+| `src/recorder.cpp` | 记录中逐点跟踪焊缝/阶段；新道次标注焊缝与补充打磨；裁剪后重建统计 |
+| `src/mainwindow.cpp` | **焊缝（工位）面板**（每焊缝卡片：阶段、当前第几遍、正常/补充次数、实时 PosR/ForceR/ESpos、检测基准）；数值栏 `焊缝 k/8 · 阶段 · 第 n 遍`；封组状态栏汇总 |
+| `src/chartview.cpp` | 焊缝底色带 + 焊缝分界实线 + `焊缝 k` 标注；道次标注 `#n`（补充打磨加"补"）；悬停读值显示焊缝/遍数/阶段 |
+| `src/csvio.cpp` | 导出 CSV 追加 `Seam` 列（由 `PassNo` 推导；载入不依赖该列） |
+| `tests/tst_station.cpp`（新增） | 编码区间、负数不建道次、四阶段全流程统计、补充打磨连续编号、旧协议兼容 |
+
+### 8.4 关键修正（必须先于 KRL 上线）
+
+原代码对 `PassNo` 的真假判断不统一（实时路径 `if (pn)`、离线路径 `if (cur > 0)`），**负数会被实时路径误当成新道次**，`onFallingEdge` 还可能对空道次表取 `.last()`。已统一为 `> 0`：
+
+- `recorder.cpp`：`if (cur > 0)` / `if (pn > 0)` / `if (g->curPass > 0)` / 裁剪后 `curPass` 只保留正数
+- `mainwindow.cpp`：`if (res.lastPass > 0)`
+- `chartview.cpp`：`if (pn > 0)`
+
+### 8.5 兼容与部署
+
+- **旧程序 / 旧 CSV**（`PassNo` 全为非负数）→ `SeamTracker` 不产生任何焊缝统计，界面退回原行为（焊缝面板给出提示），道次功能不受影响。
+- **部署顺序**：先升级上位机 exe → 再下载 KRL 程序。旧版上位机遇到负数会产生假道次，禁止反过来。
+- **回退**：KRL 换回 `krl/MinShi261010/original/` 即可，无需再换 exe。
+
+### 8.6 现场验证
+
+1. 临时把一处 `PassNo = 0` 改成 `-1`，确认上位机出现「焊缝 1/8 · 检测」且帧内为 `<PassNo>-1</PassNo>`。
+2. 完整跑一次 Part1：四张焊缝卡片的"正常道次 / 补充次数"与操作员记录一致。

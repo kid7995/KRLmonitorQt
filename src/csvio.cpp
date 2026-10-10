@@ -4,6 +4,8 @@
 #include <QTextStream>
 #include <QStringList>
 
+#include "station.h"
+
 static int safeInt(const QString& s) {
     QString t = s.trimmed();
     if (t.isEmpty()) {
@@ -77,13 +79,21 @@ bool saveCsv(const QString& path, const DataGroup& g, QString& err) {
     }
     QTextStream ts(&f);
     ts.setCodec("UTF-8");
-    ts << "time_s,PosR,ForceR,PassNo,EsPos\n";
+    ts << "time_s,PosR,ForceR,PassNo,EsPos,Seam\n";
+    int seam = 0;
     for (int i = 0; i < g.times.size(); ++i) {
+        // Seam 列由 PassNo 的负数标记推导（见 src/station.h），供下游工具/Excel 直接使用；
+        // 载入时不依赖该列（旧文件没有也能读）。
+        const PassMark m = decodePassNo(g.passNo[i]);
+        if (m.seam > 0) {
+            seam = m.seam;
+        }
         ts << QString::number(g.times[i], 'f', 6) << ','
            << g.pos[i] << ','
            << g.force[i] << ','
            << g.passNo[i] << ','
-           << g.esPos[i] << '\n';
+           << g.esPos[i] << ','
+           << seam << '\n';
     }
     return true;
 }

@@ -1,5 +1,6 @@
 set(KRLMONITOR_TEST_CORE_SOURCES
     ${PROJECT_SOURCE_DIR}/src/protocol.cpp
+    ${PROJECT_SOURCE_DIR}/src/station.cpp
     ${PROJECT_SOURCE_DIR}/src/model.cpp
     ${PROJECT_SOURCE_DIR}/src/decimate.cpp
     ${PROJECT_SOURCE_DIR}/src/csvio.cpp
@@ -30,3 +31,4 @@ add_krlmonitor_test(tst_model tst_model.cpp)
 add_krlmonitor_test(tst_decimate tst_decimate.cpp)
 add_krlmonitor_test(tst_csvio tst_csvio.cpp)
 add_krlmonitor_test(tst_recorder tst_recorder.cpp)
+add_krlmonitor_test(tst_station tst_station.cpp)

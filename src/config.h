@@ -34,3 +34,17 @@ constexpr double FONT_SCALE_MAX = 1.8;
 constexpr double ZOOM_FACTOR = 1.25;
 // 动画帧间隔（毫秒）
 constexpr int FRAME_INTERVAL_MS = 120;
+
+// ── 焊缝（工位）标记 ─────────────────────────────────────────────
+// KRL 侧用 PassNo 的正负与数值区间同时表达"阶段"和"焊缝号"，详见 src/station.h。
+//     PassNo  = n > 0        打磨中：第 n 遍
+//     PassNo  = 0            未标记（旧程序 / 未分类段）
+//     PassNo  = -(k)         检测阶段：正在检测焊缝 k
+//     PassNo  = -(10 + k)    打磨阶段·非打磨段：焊缝 k 的道间返回 / 等待 / 接近
+//     PassNo  = -(20 + k)    工位间转移：正在转移到焊缝 k
+//     PassNo  = -99          程序收尾
+constexpr int SEAM_COUNT_MAX  = 8;    // 焊缝数量上限（Part1 = 1..4，Part2 = 5..8）
+constexpr int SEAM_MARK_DETECT = 0;   // -k
+constexpr int SEAM_MARK_GRIND  = 10;  // -(10+k)
+constexpr int SEAM_MARK_MOVE   = 20;  // -(20+k)
+constexpr int SEAM_MARK_FINISH = 99;  // -99

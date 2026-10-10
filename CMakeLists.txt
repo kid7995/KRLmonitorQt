@@ -31,6 +31,8 @@ set(PROJECT_SOURCES
         src/csvio.h
         src/protocol.cpp
         src/protocol.h
+        src/station.cpp
+        src/station.h
         src/model.cpp
         src/model.h
         src/decimate.cpp

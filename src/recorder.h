@@ -19,10 +19,14 @@ struct TickResult {
     int lastForce = 0;
     int lastEs = 0;
     int lastPass = 0;
+    int lastSeam = 0;            // 当前焊缝号（0 = 未知 / 旧协议）
+    SeamPhase lastPhase = SeamPhase::None;
     bool structDirty = false;    // 建组/封存，需刷新面板
     bool monDirty = false;       // 灰色预览有新数据
     bool passDirty = false;      // 道次区间有变化，需重画分割线
+    bool seamDirty = false;      // 焊缝归属/次数有变化，需刷新工位面板
     bool sealed = false;         // 本帧封存了一组
+    DataGroup* sealedGroup = nullptr;
     QString sealedName;
     int sealedPasses = 0;
     int started = -1;            // 本帧新建记录的序号（-1 = 无）
@@ -48,6 +52,10 @@ public:
 
     // 当前正在写入的组索引（-1 = 无）
     int recGroupIdx = -1;
+
+    // 灰色预览（未记录）时段的当前阶段 / 焊缝号，供状态栏显示
+    int monSeam = 0;
+    SeamPhase monPhase = SeamPhase::None;
 
     // 常驻灰色预览缓冲（ChartView 直接读取）
     QVector<double> monTimes;

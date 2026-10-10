@@ -344,12 +344,27 @@ void ChartView::drawGrid(QPainter& p) {
 void ChartView::drawPassBands(QPainter& p) {
     if (!m_showSegments || m_overlayMode) return;
     DataGroup* g = refGroup();
-    if (!g || g->passes.isEmpty()) return;
+    if (!g) return;
     const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
     QRect plot = plotRect();
     QColor c = pal.accent;
-    c.setAlphaF(0.055);
     p.setPen(Qt::NoPen);
+
+    // 有焊缝（工位）标记：按焊缝铺底色带，4 个工位一眼可分
+    if (!g->seam.seams.isEmpty()) {
+        int i = 0;
+        for (const SeamStat& s : g->seam.seams) {
+            QColor band = c;
+            band.setAlphaF((i++ % 2) ? 0.085 : 0.035);
+            p.setBrush(band);
+            p.drawRect(QRectF(QPointF(xToPx(s.t0), plot.top()),
+                              QPointF(xToPx(s.t1), plot.bottom())));
+        }
+        return;
+    }
+
+    if (g->passes.isEmpty()) return;
+    c.setAlphaF(0.055);
     p.setBrush(c);
     for (int k = 0; k < g->passes.size(); k += 2) {
         const Pass& pass = g->passes[k];
@@ -362,6 +377,35 @@ void ChartView::drawPassBands(QPainter& p) {
 void ChartView::drawPassDividers(QPainter& p) {
     if (!m_showSegments || m_overlayMode) return;
     QRect plot = plotRect();
+
+    // 焊缝（工位）分界：实线 + 焊缝号，用于区分 1..8 号焊缝
+    DataGroup* rg = refGroup();
+    if (rg && !rg->seam.seams.isEmpty()) {
+        const theme::Palette& rpal = theme::GROUP_PALETTES[rg->paletteIdx];
+        QColor sc = rpal.accent;
+        sc.setAlphaF(0.75);
+        QPen spen(sc);
+        spen.setWidthF(1.4);
+        spen.setCosmetic(true);
+        p.setPen(spen);
+        for (const SeamStat& s : rg->seam.seams) {
+            const double x = xToPx(s.t0);
+            p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+        }
+        QFont sf = p.font();
+        sf.setPixelSize(scaleFontPx(11));
+        p.setFont(sf);
+        QFontMetrics sfm(sf);
+        QColor tc = rpal.accent;
+        tc.setAlphaF(0.95);
+        p.setPen(tc);
+        for (const SeamStat& s : rg->seam.seams) {
+            const double x = xToPx(s.t0);
+            p.drawText(QPointF(x + 4, plot.top() + sfm.ascent() + 2),
+                       QStringLiteral("焊缝 %1").arg(s.seam));
+        }
+    }
+
     for (DataGroup* g : *m_groups) {
         if (g->passes.isEmpty()) continue;
         const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
@@ -404,6 +448,9 @@ void ChartView::drawPassAnnotations(QPainter& p) {
         const Pass& pass = g->passes[k];
         double x = xToPx((pass.t0 + pass.t1) / 2.0);
         QString txt = QStringLiteral("#%1").arg(pass.no);
+        if (pass.retry) {
+            txt += QStringLiteral("补");
+        }
         int w = fm.horizontalAdvance(txt);
         int h = fm.height();
         p.drawText(QRectF(x - w / 2.0, plot.top() - qRound(4 * fs) - h, w, h),
@@ -847,20 +894,35 @@ void ChartView::computeHover(double xm) {
         m.force = g->force[idx];
         m_hoverMarks.append(m);
 
-        if (!g->passes.isEmpty()) {
-            int pn = (idx < g->passNo.size()) ? g->passNo[idx] : 0;
+        if (idx < g->passNo.size()) {
+            const int pn = g->passNo[idx];
             QString tag;
-            if (pn) {
-                tag = QStringLiteral("第%1道").arg(pn);
-            } else {
-                // PassNo==0：道次之间是上一道的反向返回段；
-                // 仅首道之前（无前一道）仍称"非打磨段"
-                int prev = -1;
-                for (int k = g->passes.size() - 1; k >= 0; --k) {
-                    if (g->passes[k].i1 < idx) { prev = k; break; }
+            if (pn > 0) {
+                tag = QStringLiteral("第%1遍").arg(pn);
+                for (const Pass& pp : g->passes) {     // 找到该样点所属道次，取焊缝/补充标记
+                    if (idx >= pp.i0 && idx <= pp.i1) {
+                        if (pp.seam > 0) {
+                            tag = QStringLiteral("焊缝%1 第%2遍").arg(pp.seam).arg(pp.no);
+                        }
+                        if (pp.retry) {
+                            tag += QStringLiteral("（补充）");
+                        }
+                        break;
+                    }
                 }
-                tag = (prev >= 0) ? QStringLiteral("第%1道 返回段").arg(g->passes[prev].no)
-                                  : QStringLiteral("非打磨段");
+            } else {
+                const PassMark mk = decodePassNo(pn);   // 负数标记：焊缝 + 阶段
+                if (mk.seam > 0) {
+                    tag = QStringLiteral("焊缝%1 %2").arg(mk.seam).arg(seamPhaseLabel(mk.phase));
+                } else {
+                    // 无标记：道次之间是上一道的反向返回段；首道之前称"非打磨段"
+                    int prev = -1;
+                    for (int k = g->passes.size() - 1; k >= 0; --k) {
+                        if (g->passes[k].i1 < idx) { prev = k; break; }
+                    }
+                    tag = (prev >= 0) ? QStringLiteral("第%1遍 返回段").arg(g->passes[prev].no)
+                                      : QStringLiteral("非打磨段");
+                }
             }
             m_hoverLines << QStringLiteral(" %1  [%2]").arg(pal.label, tag);
         }
