@@ -90,9 +90,18 @@ void TcpServer::dispatch(const QByteArray& pkt) {
     if (!parsePacket(QString::fromUtf8(pkt), s)) {
         return;  // 解析失败只丢这一帧
     }
+    m_lastFrameMs = m_clock.elapsed();
     if (!m_armed) {
         return;
     }
     s.ts = m_clock.elapsed() / 1000.0;
     m_queue.enqueue(s);
+}
+
+QString TcpServer::peerAddress() const {
+    return m_sockets.isEmpty() ? QString() : m_sockets.first()->peerAddress().toString();
+}
+
+qint64 TcpServer::msSinceLastFrame() const {
+    return m_lastFrameMs < 0 ? -1 : m_clock.elapsed() - m_lastFrameMs;
 }

@@ -29,6 +29,9 @@ public:
     quint16 port() const { return m_port; }
     // 当前是否有 KUKA 连着（用于界面上的连接指示灯）
     bool hasClient() const { return !m_sockets.isEmpty(); }
+    // 对端地址（多个客户端时取第一个）与"距最后一帧过去了多久"
+    QString peerAddress() const;
+    qint64 msSinceLastFrame() const;
 
     void setArmed(bool v) { m_armed = v; }
     bool armed() const { return m_armed; }
@@ -61,4 +64,5 @@ private:
     QString m_lastError;
     quint16 m_port = 0;
     QElapsedTimer m_clock;
+    qint64 m_lastFrameMs = -1;      // 最近一帧的到达时刻（m_clock 毫秒）
 };

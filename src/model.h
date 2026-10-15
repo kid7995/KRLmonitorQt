@@ -137,6 +137,8 @@ public:
     bool hasEs = false;      // 是否含非零 ESpos（旧格式 CSV 补 0 -> false）
     bool showPos = true;
     bool showForce = true;
+    // 组级可见性（多组对比时用来挑选参与对比的组；false = 整组不画，也不参与坐标范围）
+    bool visible = true;
     int paletteIdx = 0;
     bool live = false;
     int curPass = 0;         // 记录中：当前未闭合道次编号（0 = 无）

@@ -29,7 +29,10 @@ class QCloseEvent;
 class ChartView;
 class TcpServer;
 
-struct CardWidgets {
+// 数据组列表里每一行的控件（组列表是"多组对比"的控制台）
+struct GroupRowWidgets {
+    QPushButton* vis = nullptr;      // 参与对比显示
+    QPushButton* star = nullptr;     // 设为参考组
     QPushButton* posBtn = nullptr;
     QPushButton* forceBtn = nullptr;
     QLabel* ptsLabel = nullptr;
@@ -128,6 +131,10 @@ private:
     void removeGroup(int idx);
     void toggleGroupPos(int idx);
     void toggleGroupForce(int idx);
+    void toggleGroupVisible(int idx);
+    void setAllGroupsVisible(bool on);
+    void invertGroupVisibility();
+    void setRefGroup(int idx);
     int nextPaletteIdx() const;
     int refGroupIdx() const;
     void updateGroupPoints(DataGroup* g, int n);
@@ -209,5 +216,6 @@ private:
     QLabel* m_groupsHint = nullptr;
     QWidget* m_cardsWidget = nullptr;
     QVBoxLayout* m_cardsLayout = nullptr;   // 组卡片竖排（放进滚动区）
-    QHash<DataGroup*, CardWidgets> m_cards;
+    QHash<DataGroup*, GroupRowWidgets> m_groupRows;
+    int m_refGroup = -1;                    // ★ 参考组（-1 = 自动：正在记录的组或第一组）
 };

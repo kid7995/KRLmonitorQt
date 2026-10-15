@@ -492,6 +492,30 @@ QWidget* MainWindow::buildGroupsPanel() {
     scroll->setWidget(m_cardsWidget);
     v->addWidget(scroll, 1);
 
+    // 底部：批量控制"哪些组参与对比"
+    auto* foot = new QHBoxLayout();
+    auto* btnVisAll = makeBtn(QStringLiteral("全部可见"), BtnKind::Ghost);
+    connect(btnVisAll, &QPushButton::clicked, this, [this]() { setAllGroupsVisible(true); });
+    foot->addWidget(btnVisAll);
+    auto* btnInv = makeBtn(QStringLiteral("反选"), BtnKind::Ghost);
+    connect(btnInv, &QPushButton::clicked, this, &MainWindow::invertGroupVisibility);
+    foot->addWidget(btnInv);
+    auto* btnOnlyRef = makeBtn(QStringLiteral("只留参考组"), BtnKind::Ghost);
+    btnOnlyRef->setToolTip(QStringLiteral("隐藏其它组，只保留 ★ 参考组"));
+    connect(btnOnlyRef, &QPushButton::clicked, this, [this]() {
+        const int r = refGroupIdx();
+        for (int i = 0; i < m_groups.size(); ++i) {
+            m_groups[i]->visible = (i == r);
+        }
+        refreshGroupsPanel();
+        m_chart->relimAll();
+        m_chart->update();
+        setStatus(QStringLiteral("只显示参考组（★）"));
+    });
+    foot->addWidget(btnOnlyRef);
+    foot->addStretch();
+    v->addLayout(foot);
+
     refreshGroupsPanel();
     return outer;
 }
@@ -523,23 +547,25 @@ QWidget* MainWindow::buildSeamPanel() {
 
     // 8 个 chip 常驻：显示"几号焊缝"，同时兼任"突出显示哪条焊缝"的开关。
     // 默认一个都不选 = 全部正常显示；点某号 → 这一段画粗画亮、其余淡化（仍然可见）。
-    int chipRow = 0;
-    int chipCol = 0;
+    // 一行一条焊缝（导航列表），比 4×2 的方块更好读，也便于带上"几道/补几次/检测值"
     for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
         auto* b = new QPushButton(QString::number(k), m_seamWidget);
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedHeight(26);
         b->setToolTip(QStringLiteral("焊缝 %1：点击把它的曲线突出显示（再点取消，可多选叠加）").arg(k));
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton{text-align:left;padding:0 8px;border:1px solid %1;border-radius:5px;"
+            "background:%2;font-size:9pt;font-weight:600;}"
+            "QPushButton:hover{border-color:%3;}"
+            "QPushButton:checked{background:%4;border-color:%4;color:#FFFFFF;}")
+            .arg(theme::BORDER.name(), theme::PANEL.name(),
+                 theme::C_INFO_HI.name(), theme::C_INFO.name()));
         connect(b, &QPushButton::clicked, this, [this, k]() {
             setSeamSelected(k, !m_seamSel.contains(k));
         });
-        m_seamLayout->addWidget(b, chipRow, chipCol);
+        m_seamLayout->addWidget(b, k - 1, 0);
         m_seamChips.insert(k, b);
-        if (++chipCol >= 4) {
-            chipCol = 0;
-            ++chipRow;
-        }
     }
 
     auto* btnRow = new QHBoxLayout();
@@ -639,9 +665,20 @@ void MainWindow::refreshSeamChips() {
         const bool liveNow = has && g->live && s->live;
         const QColor accent = theme::paletteOf(k - 1).accent;
 
-        QString txt = QString::number(k);
-        if (has && (s->normalN + s->retryN) > 0) {
-            txt += QStringLiteral("│%1").arg(s->normalN + s->retryN);
+        // 行内摘要：几号焊缝 + 正常道数/补充次数 + 检测的焊缝高度
+        QString txt = QStringLiteral("%1").arg(k);
+        if (has) {
+            txt += QStringLiteral("    正常 %1 道").arg(s->normalN);
+            if (s->retryN > 0) {
+                txt += QStringLiteral(" · 补 %1").arg(s->retryN);
+            }
+            if (s->hasValues && s->weldHum != DETECT_UNSET) {
+                txt += QStringLiteral("    %1 mm").arg(s->weldHum / 1000.0, 0, 'f', 3);
+            } else {
+                txt += QStringLiteral("    —");
+            }
+        } else {
+            txt += QStringLiteral("    无数据");
         }
         b->setText(txt);
         b->setChecked(sel);
@@ -951,7 +988,8 @@ void MainWindow::buildDocks() {
 
 void MainWindow::applyDefaultDockLayout() {
     // 左列三块的高度分配 + 左右两列的宽度
-    resizeDocks({m_dockLink, m_dockGroups, m_dockSeams}, {170, 400, 240}, Qt::Vertical);
+    // 焊缝现在是 8 行导航列表，需要的高度比原来的 chip 网格多
+    resizeDocks({m_dockLink, m_dockGroups, m_dockSeams}, {150, 330, 340}, Qt::Vertical);
     resizeDocks({m_dockValues, m_dockDetail}, {250, 430}, Qt::Vertical);
     resizeDocks({m_dockLink, m_dockGroups, m_dockSeams}, {300, 300, 300}, Qt::Horizontal);
     resizeDocks({m_dockValues, m_dockDetail}, {320, 320}, Qt::Horizontal);
@@ -1024,7 +1062,7 @@ void MainWindow::refreshGroupsPanel() {
         if (item->widget()) item->widget()->deleteLater();
         delete item;
     }
-    m_cards.clear();
+    m_groupRows.clear();
 
     int n = m_groups.size();
     // 面板只有 ~300px 宽，长文本会把整列撑开 —— 目录/上限这类细节放到 tooltip
@@ -1061,6 +1099,19 @@ void MainWindow::refreshGroupsPanel() {
 
         // 标题行：徽章 + 文件名 + 删除
         auto* titleRow = new QHBoxLayout();
+        // 参与对比显示（组级可见性）
+        auto* visBtn = new QPushButton(g->visible ? QStringLiteral("◉") : QStringLiteral("○"), card);
+        visBtn->setCheckable(true);
+        visBtn->setChecked(g->visible);
+        visBtn->setCursor(Qt::PointingHandCursor);
+        visBtn->setFixedSize(20, 20);
+        visBtn->setToolTip(QStringLiteral("参与对比显示（关闭后整组不画，也不参与坐标范围）"));
+        visBtn->setStyleSheet(QStringLiteral(
+            "QPushButton{background:transparent;border:none;color:%1;font-size:11pt;font-weight:bold;}"
+            "QPushButton:checked{color:%2;}")
+            .arg(theme::C_DIM.name(), accent));
+        connect(visBtn, &QPushButton::clicked, this, [this, i]() { toggleGroupVisible(i); });
+        titleRow->addWidget(visBtn, 0, Qt::AlignTop);
         // 徽章：组色 + 状态（🔴 记录中 / ✓ 已存档 / ⚠ 断线强制封存，数据可能不完整）
         QString badge = pal.label + (g->live ? QStringLiteral("🔴") : QString());
         if (g->incomplete) {
@@ -1082,6 +1133,19 @@ void MainWindow::refreshGroupsPanel() {
         auto* nameLbl = new QLabel(shortName, card);
         nameLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_TEXT.name()));
         titleRow->addWidget(nameLbl, 1);
+        // ★ 参考组：曲线上的焊缝分界、道次标注与叠道对比都以它为准
+        const bool isRef = (i == refGroupIdx());
+        auto* starBtn = new QPushButton(isRef ? QStringLiteral("★") : QStringLiteral("☆"), card);
+        starBtn->setCursor(Qt::PointingHandCursor);
+        starBtn->setFixedSize(20, 20);
+        starBtn->setToolTip(QStringLiteral("设为参考组（焊缝分界/道次标注/叠道对比以此组为准）"));
+        starBtn->setStyleSheet(QStringLiteral(
+            "QPushButton{background:transparent;border:none;font-size:11pt;color:%1;}"
+            "QPushButton:hover{color:%2;}")
+            .arg(isRef ? theme::C_WARN_HI.name() : theme::C_DIM.name(), theme::C_WARN_HI.name()));
+        connect(starBtn, &QPushButton::clicked, this, [this, i]() { setRefGroup(i); });
+        titleRow->addWidget(starBtn, 0, Qt::AlignTop);
+
         auto* delBtn = new QPushButton(QStringLiteral("×"), card);
         delBtn->setCursor(Qt::PointingHandCursor);
         delBtn->setFixedSize(20, 20);
@@ -1134,14 +1198,14 @@ void MainWindow::refreshGroupsPanel() {
         styleForceButton(btnForce, g);
 
         m_cardsLayout->addWidget(card);
-        m_cards.insert(g, CardWidgets{btnPos, btnForce, ptsLbl});
+        m_groupRows.insert(g, GroupRowWidgets{visBtn, starBtn, btnPos, btnForce, ptsLbl});
     }
     m_cardsLayout->addStretch();
 }
 
 void MainWindow::updateGroupPoints(DataGroup* g, int n) {
-    auto it = m_cards.find(g);
-    if (it != m_cards.end()) {
+    auto it = m_groupRows.find(g);
+    if (it != m_groupRows.end()) {
         it->ptsLabel->setText(QStringLiteral("%1 pts").arg(theme::formatThousands(n)));
     }
 }
@@ -1160,11 +1224,69 @@ int MainWindow::nextPaletteIdx() const {
 }
 
 int MainWindow::refGroupIdx() const {
+    // 显式指定的 ★ 参考组优先；没指定时：正在记录的组 → 第一组
+    if (m_refGroup >= 0 && m_refGroup < m_groups.size()) {
+        return m_refGroup;
+    }
     int ref = m_recorder->recGroupIdx;
     if (ref < 0 || ref >= m_groups.size()) {
         ref = m_groups.isEmpty() ? -1 : 0;
     }
     return ref;
+}
+
+void MainWindow::setRefGroup(int idx) {
+    if (idx < 0 || idx >= m_groups.size()) {
+        return;
+    }
+    m_refGroup = idx;
+    refreshGroupsPanel();
+    m_chart->setRefGroupIdx(refGroupIdx());
+    if (m_overlayMode) {
+        rebuildOverlayStatus();
+    }
+    m_chart->unlock();
+    m_chart->relimAll();
+    m_chart->update();
+    setStatus(QStringLiteral("★ 参考组已切到：%1（焊缝分界/道次标注/叠道对比以此组为准）")
+              .arg(m_groups[idx]->name));
+}
+
+void MainWindow::toggleGroupVisible(int idx) {
+    if (idx < 0 || idx >= m_groups.size()) {
+        return;
+    }
+    m_groups[idx]->visible = !m_groups[idx]->visible;
+    refreshGroupsPanel();
+    if (m_overlayMode) {
+        rebuildOverlayStatus();
+    }
+    if (!m_chart->locked()) {
+        m_chart->relimAll();
+    }
+    m_chart->update();
+}
+
+void MainWindow::setAllGroupsVisible(bool on) {
+    for (DataGroup* g : m_groups) {
+        g->visible = on;
+    }
+    refreshGroupsPanel();
+    if (!m_chart->locked()) {
+        m_chart->relimAll();
+    }
+    m_chart->update();
+}
+
+void MainWindow::invertGroupVisibility() {
+    for (DataGroup* g : m_groups) {
+        g->visible = !g->visible;
+    }
+    refreshGroupsPanel();
+    if (!m_chart->locked()) {
+        m_chart->relimAll();
+    }
+    m_chart->update();
 }
 
 int MainWindow::addGroup(const QString& name, const QVector<double>& times,
@@ -2023,11 +2145,24 @@ void MainWindow::refreshLinkLabel() {
 
     if (m_linkPanel) {
         const QString err = (!m_listenOk && m_server) ? m_server->lastError() : QString();
-        m_linkPanel->setText(QStringLiteral("状态：%1\n端口：%2\n本机：%3%4")
-                                 .arg(state).arg(LISTEN_PORT).arg(m_localIps)
-                                 .arg(err.isEmpty()
-                                          ? QString()
-                                          : QStringLiteral("\n错误：%1").arg(err)));
+        const QString peer = (m_server && m_server->hasClient()) ? m_server->peerAddress() : QString();
+        const qint64 age = (m_server && m_server->hasClient()) ? m_server->msSinceLastFrame() : -1;
+        QStringList rows;
+        rows << QStringLiteral("状态　　%1").arg(state);
+        rows << QStringLiteral("端口　　%1").arg(LISTEN_PORT);
+        rows << QStringLiteral("本机　　%1").arg(m_localIps);
+        if (!peer.isEmpty()) {
+            rows << QStringLiteral("对端　　%1").arg(peer);
+        }
+        if (age >= 0) {
+            rows << QStringLiteral("最近收帧　%1 ms 前").arg(age);
+        } else if (!peer.isEmpty()) {
+            rows << QStringLiteral("最近收帧　尚未收到");
+        }
+        if (!err.isEmpty()) {
+            rows << QStringLiteral("错误　　%1").arg(err);
+        }
+        m_linkPanel->setText(rows.join(QStringLiteral("\n")));
     }
     m_linkLabel->setToolTip(QStringLiteral(
         "KUKA 控制器上 EthernetKRL\\ECMMonitor\\config.xml 里的 <IP> 必须等于这里显示的本机地址，"

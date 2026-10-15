@@ -211,6 +211,9 @@ void ChartView::computeBounds(double& x0, double& x1, double& y10, double& y11,
                           m_recorder->monTimes, m_recorder->monForce), true, false, true);
         }
         for (DataGroup* g : *m_groups) {
+            if (!g->visible) {      // 组级隐藏：不参与坐标范围
+                continue;
+            }
             if (filterActive()) {
                 // 过滤视图：范围只按"看得见的段"算，否则缩放到选中的焊缝就失去意义
                 const int n = g->times.size();
@@ -675,7 +678,7 @@ void ChartView::drawPassDividers(QPainter& p) {
     }
 
     for (DataGroup* g : *m_groups) {
-        if (g->passes.isEmpty()) continue;
+        if (!g->visible || g->passes.isEmpty()) continue;
         const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
         QColor c = pal.accent;
         c.setAlphaF(0.40);
@@ -865,6 +868,9 @@ void ChartView::drawLegend(QPainter& p) {
         }
     } else {
         for (DataGroup* g : *m_groups) {
+            if (!g->visible) {
+                continue;
+            }
             const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             if (g->showPos) {
                 Entry e; e.color = pal.pos; e.style = Qt::SolidLine; e.customDash = false;
@@ -1024,7 +1030,9 @@ void ChartView::paintEvent(QPaintEvent*) {
         // 阶段/工序过滤：只画匹配的段（逐段绘制、段间不连线）。
         // 注意这里必须**不再画未过滤的全曲线**，否则过滤就成了"叠加"，隐藏不掉任何东西。
         for (DataGroup* g : *m_groups) {
-            drawSegmented(p, g);
+            if (g->visible) {
+                drawSegmented(p, g);
+            }
         }
     } else {
         // 底色层一律浅色：没选中任何焊缝时整张图就是浅色的；
@@ -1040,6 +1048,9 @@ void ChartView::paintEvent(QPaintEvent*) {
                      theme::C_MONITOR, Qt::DashLine, 1.0, true, monA);
         }
         for (DataGroup* g : *m_groups) {
+            if (!g->visible) {
+                continue;
+            }
             const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             if (g->showPos) {
                 drawLine(p, visibleXY(g->decCache, QStringLiteral("pos"), g->times, g->pos),
@@ -1055,7 +1066,9 @@ void ChartView::paintEvent(QPaintEvent*) {
             }
         }
         for (DataGroup* g : *m_groups) {
-            drawFocusSegments(p, g);        // 把被选中的那几条焊缝叠画出来
+            if (g->visible) {
+                drawFocusSegments(p, g);    // 把被选中的那几条焊缝叠画出来
+            }
         }
     }
     p.restore();
@@ -1176,7 +1189,7 @@ void ChartView::computeHover(double xm) {
     double dispT = xm;
 
     for (DataGroup* g : *m_groups) {
-        if (g->times.isEmpty()) continue;
+        if (!g->visible || g->times.isEmpty()) continue;
         int idx = nearestIndex(g->times, xm);
         double tx = g->times[idx];
         if (g == rg) dispT = tx;
