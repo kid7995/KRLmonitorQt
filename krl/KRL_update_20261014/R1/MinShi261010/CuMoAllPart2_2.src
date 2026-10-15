@@ -1,0 +1,820 @@
+&ACCESS RVO
+&PARAM EDITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF CuMoAllPart2_2( )
+   DECL INT TIMES5,j5,InitLen5,RemainLen5,RetryCount5
+   DECL INT TIMES6,j6,InitLen6,RemainLen6,RetryCount6
+   DECL INT TIMES7,j7,InitLen7,RemainLen7,RetryCount7
+   DECL INT TIMES8,j8,InitLen8,RemainLen8,RetryCount8
+   DECL REAL tmp5,LENGTH5,DIS51,DIS52,HF1Offset5
+   DECL REAL tmp6,LENGTH6,DIS61,DIS62,HF1Offset6
+   DECL REAL tmp7,LENGTH7,DIS71,DIS72,HF1Offset7
+   DECL REAL tmp8,LENGTH8,DIS81,DIS82,HF1Offset8
+;FOLD INI;%{PE}
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3 
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+   MoInitCu()
+
+;---- Detection station 5 : P51 -> P58 -> P52 -> P53 ----
+;FOLD SPTP P51 Vel=100 % PDAT5 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P51; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT5; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP51 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP51), $BASE = SBASE(FP51.BASE_NO), $IPO_MODE = SIPO_MODE(FP51.IPO_FRAME), $LOAD = SLOAD(FP51.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT5), $APO = SAPO_PTP(PPDAT5), $GEAR_JERK[1] = SGEAR_JERK(PPDAT5), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0            
+   RecordOn = TRUE
+   PassNo   = -5          ; jian ce gong wei 5
+;FOLD LIN P58 Vel=0.1 m/s CPDAT57 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P58; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT57; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT57
+FDAT_ACT = FP58
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP58
+;ENDFOLD
+;FOLD LIN P52 Vel=0.01 m/s CPDAT51 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P52; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT51; Kuka.VelocityPath=0.01; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT51
+FDAT_ACT = FP52
+BAS(#CP_PARAMS, 0.01)
+SET_CD_PARAMS (0)
+LIN XP52
+;ENDFOLD
+   ;FOLD WAIT Time= 0.5 sec ;%{PE}
+      ;FOLD Parameters ;%{h}
+         ;Params IlfProvider=kukaroboter.basistech.inlineforms.logics.wait; Time=2.0
+      ;ENDFOLD
+      WAIT SEC 0.5
+   ;ENDFOLD
+   HF1Offset5 = GetHFZ()
+   LENGTH5    = HF1Offset5 *100
+   tmp5       = LENGTH5/ Ofs
+   TIMES5     = MOD(tmp5)
+   ;----xin zeng buchong damo ----
+   IF LENGTH5 > 0 THEN
+      RemainLen5 = LENGTH5 - TIMES5 * Ofs
+   ELSE
+      RemainLen5 = 0
+      LENGTH5    = 0
+      TIMES5     = 0
+   ENDIF
+   ;----xin zeng buchong damo ----
+   InitLen5              = FinalPos-((LV1+LV3)/2-AVG5)*100 - GZoffset5 - LENGTH5
+   ESpos                 = InitLen5
+   MonRef                = ESpos    ; shang chuan jian ce jie guo (InitLen5)
+   Baseheight5           = InitLen5 + LENGTH5
+   Cuobian5              = LV1-LV3
+   Measure_Height5       = HF1Offset5
+   GLOBAL_Measure_Height = Measure_Height5
+   ;---- ECM jian ce jie guo shang bao (xin zeng) ----
+   ECM_Seam              = 5
+   ECM_WeldH             = Measure_Height5
+   ECM_BaseH             = Baseheight5
+   ECM_Misalign          = Cuobian5
+   ECM_Rounds            = TIMES5
+   GLOBAL_LOOPCOUNT      = TIMES5
+   Weld_misalignment     = Cuobian5
+   GLOBAL_RES_Z          = Baseheight5
+   GLOBAL_RES            = (LV1+LV3)*0.5
+   
+;FOLD LIN P53 Vel=0.1 m/s CPDAT52 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P53; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT52; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT52
+FDAT_ACT = FP53
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP53
+;ENDFOLD
+
+;---- Detection station 6 : P61 -> P68 -> P62 -> P63 ----
+;FOLD SPTP P61 Vel=100 % PDAT6 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P61; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT6; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP61 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP61), $BASE = SBASE(FP61.BASE_NO), $IPO_MODE = SIPO_MODE(FP61.IPO_FRAME), $LOAD = SLOAD(FP61.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT6), $APO = SAPO_PTP(PPDAT6), $GEAR_JERK[1] = SGEAR_JERK(PPDAT6), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0            
+   RecordOn = TRUE
+   PassNo   = -6          ; jian ce gong wei 6
+;FOLD LIN P68 Vel=0.1 m/s CPDAT67 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P68; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT67; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT67
+FDAT_ACT = FP68
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP68
+;ENDFOLD
+;FOLD LIN P62 Vel=0.01 m/s CPDAT61 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P62; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT61; Kuka.VelocityPath=0.01; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT61
+FDAT_ACT = FP62
+BAS(#CP_PARAMS, 0.01)
+SET_CD_PARAMS (0)
+LIN XP62
+;ENDFOLD
+   ;FOLD WAIT Time= 0.5 sec ;%{PE}
+      ;FOLD Parameters ;%{h}
+         ;Params IlfProvider=kukaroboter.basistech.inlineforms.logics.wait; Time=2.0
+      ;ENDFOLD
+      WAIT SEC 0.5
+   ;ENDFOLD
+   HF1Offset6 = GetHFZ()
+   LENGTH6    = HF1Offset6 *100
+   tmp6       = LENGTH6/ Ofs
+   TIMES6     = MOD(tmp6)
+   ;----xin zeng buchong damo ----
+   IF LENGTH6>0 THEN
+      RemainLen6 = LENGTH6 - TIMES6 * Ofs
+   ELSE
+      RemainLen6 = 0
+      LENGTH6    = 0
+      TIMES6     = 0
+   ENDIF
+   ;RemainLen6 = 20
+   ;----xin zeng buchong damo ----
+   InitLen6              = FinalPos-((LV1+LV3)/2-AVG6)*100 - GZoffset6-LENGTH6
+   ESpos                 = InitLen6
+   MonRef                = ESpos    ; shang chuan jian ce jie guo (InitLen6)
+   Baseheight6           = InitLen6 + LENGTH6
+   Cuobian6              = LV1-LV3
+   Measure_Height6       = HF1Offset6
+   GLOBAL_Measure_Height = Measure_Height6
+   ;---- ECM jian ce jie guo shang bao (xin zeng) ----
+   ECM_Seam              = 6
+   ECM_WeldH             = Measure_Height6
+   ECM_BaseH             = Baseheight6
+   ECM_Misalign          = Cuobian6
+   ECM_Rounds            = TIMES6
+   GLOBAL_LOOPCOUNT      = TIMES6
+   Weld_misalignment     = Cuobian6
+   GLOBAL_RES_Z          = Baseheight6
+   GLOBAL_RES            = (LV1+LV3)*0.5
+   
+;FOLD LIN P63 Vel=0.1 m/s CPDAT62 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P63; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT62; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT62
+FDAT_ACT = FP63
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP63
+;ENDFOLD
+
+;---- Detection station 7 : P71 -> P78 -> P72 -> P73 ----
+;FOLD SPTP P71 Vel=100 % PDAT7 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P71; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT7; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP71 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP71), $BASE = SBASE(FP71.BASE_NO), $IPO_MODE = SIPO_MODE(FP71.IPO_FRAME), $LOAD = SLOAD(FP71.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT7), $APO = SAPO_PTP(PPDAT7), $GEAR_JERK[1] = SGEAR_JERK(PPDAT7), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0            
+   RecordOn = TRUE
+   PassNo   = -7          ; jian ce gong wei 7
+;FOLD LIN P78 Vel=0.1 m/s CPDAT77 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P78; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT77; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT77
+FDAT_ACT = FP78
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP78
+;ENDFOLD
+;FOLD LIN P72 Vel=0.01 m/s CPDAT71 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P72; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT71; Kuka.VelocityPath=0.01; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT71
+FDAT_ACT = FP72
+BAS(#CP_PARAMS, 0.01)
+SET_CD_PARAMS (0)
+LIN XP72
+;ENDFOLD
+   ;FOLD WAIT Time= 0.5 sec ;%{PE}
+      ;FOLD Parameters ;%{h}
+         ;Params IlfProvider=kukaroboter.basistech.inlineforms.logics.wait; Time=2.0
+      ;ENDFOLD
+      WAIT SEC 0.5
+   ;ENDFOLD
+   HF1Offset7 = GetHFZ()
+   LENGTH7    = HF1Offset7 *100
+   tmp7       = LENGTH7/ Ofs
+   TIMES7     = MOD(tmp7)
+   ;----xin zeng buchong damo ----
+   IF LENGTH7 > 0 THEN
+      RemainLen7 = LENGTH7 - TIMES7 * Ofs
+   ELSE
+      RemainLen7 = 0
+      LENGTH7    = 0
+      TIMES7     = 0
+   ENDIF
+   ;RemainLen7 = 20
+   ;----xin zeng buchong damo ----
+   InitLen7              = FinalPos-((LV1+LV3)/2-AVG7)*100 - GZoffset7-LENGTH7
+   ESpos                 = InitLen7
+   MonRef                = ESpos    ; shang chuan jian ce jie guo (InitLen7)
+   Baseheight7           = InitLen7 + LENGTH7
+   Cuobian7              = LV1-LV3
+   Measure_Height7       = HF1Offset7
+   GLOBAL_Measure_Height = Measure_Height7
+   ;---- ECM jian ce jie guo shang bao (xin zeng) ----
+   ECM_Seam              = 7
+   ECM_WeldH             = Measure_Height7
+   ECM_BaseH             = Baseheight7
+   ECM_Misalign          = Cuobian7
+   ECM_Rounds            = TIMES7
+   GLOBAL_LOOPCOUNT      = TIMES7
+   Weld_misalignment     = Cuobian7
+   GLOBAL_RES_Z          = Baseheight7
+   GLOBAL_RES            = (LV1+LV3)*0.5
+   
+;FOLD LIN P73 Vel=0.1 m/s CPDAT72 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P73; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT72; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT72
+FDAT_ACT = FP73
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP73
+;ENDFOLD
+
+;---- Detection station 8 : P81 -> P88 -> P82 -> P83 ----
+;FOLD SPTP P81 Vel=100 % PDAT8 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P81; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT8; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP81 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP81), $BASE = SBASE(FP81.BASE_NO), $IPO_MODE = SIPO_MODE(FP81.IPO_FRAME), $LOAD = SLOAD(FP81.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT8), $APO = SAPO_PTP(PPDAT8), $GEAR_JERK[1] = SGEAR_JERK(PPDAT8), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0            
+   RecordOn = TRUE
+   PassNo   = -8          ; jian ce gong wei 8
+;FOLD LIN P88 Vel=0.1 m/s CPDAT87 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P88; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT87; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT87
+FDAT_ACT = FP88
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP88
+;ENDFOLD
+;FOLD LIN P82 Vel=0.01 m/s CPDAT81 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P82; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT81; Kuka.VelocityPath=0.01; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT81
+FDAT_ACT = FP82
+BAS(#CP_PARAMS, 0.01)
+SET_CD_PARAMS (0)
+LIN XP82
+;ENDFOLD
+   ;FOLD WAIT Time= 0.5 sec ;%{PE}
+      ;FOLD Parameters ;%{h}
+         ;Params IlfProvider=kukaroboter.basistech.inlineforms.logics.wait; Time=2.0
+      ;ENDFOLD
+      WAIT SEC 0.5
+   ;ENDFOLD
+   HF1Offset8 = GetHFZ()
+   LENGTH8    = HF1Offset8 *100
+   tmp8       = LENGTH8/ Ofs
+   TIMES8     = MOD(tmp8)
+   ;----xin zeng buchong damo ----
+   IF LENGTH8 > 0 THEN
+      RemainLen8 = LENGTH8 - TIMES8 * Ofs
+   ELSE
+      RemainLen8 = 0
+      LENGTH8    = 0
+      TIMES8     = 0
+   ENDIF
+   ;RemainLen8 = 20
+   ;----xin zeng buchong damo ----
+   InitLen8              = FinalPos-((LV1+LV3)/2-AVG8)*100 - GZoffset8-LENGTH8
+   ESpos                 = InitLen8
+   MonRef                = ESpos    ; shang chuan jian ce jie guo (InitLen8)
+   Baseheight8           = InitLen8 + LENGTH8
+   Cuobian8              = LV1-LV3
+   Measure_Height8       = HF1Offset8
+   GLOBAL_Measure_Height = Measure_Height8
+   ;---- ECM jian ce jie guo shang bao (xin zeng) ----
+   ECM_Seam              = 8
+   ECM_WeldH             = Measure_Height8
+   ECM_BaseH             = Baseheight8
+   ECM_Misalign          = Cuobian8
+   ECM_Rounds            = TIMES8
+   GLOBAL_LOOPCOUNT      = TIMES8
+   Weld_misalignment     = Cuobian8
+   GLOBAL_RES_Z          = Baseheight8
+   GLOBAL_RES            = (LV1+LV3)*0.5
+   
+;FOLD LIN P83 Vel=0.1 m/s CPDAT82 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P83; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT82; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT82
+FDAT_ACT = FP83
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP83
+;ENDFOLD
+
+;---- Move to station 5 P51 for grinding phase ----
+   PassNo = -15       ; zhuan yi dao gong wei 5
+;FOLD SPTP P51 Vel=100 % PDAT5 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P51; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT5; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP51 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP51), $BASE = SBASE(FP51.BASE_NO), $IPO_MODE = SIPO_MODE(FP51.IPO_FRAME), $LOAD = SLOAD(FP51.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT5), $APO = SAPO_PTP(PPDAT5), $GEAR_JERK[1] = SGEAR_JERK(PPDAT5), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0
+
+;---- Grinding station 5 ----
+   PassNo = -15       ; da mo gong wei 5 : fei da mo duan
+   ESpos = InitLen5
+;FOLD LIN P54 Vel=0.1 m/s CPDAT53 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P54; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT53; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT53
+FDAT_ACT = FP54
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP54
+;ENDFOLD
+;---- zong qi dong ----
+   ;Sspeed = 8000
+   ;WAIT FOR Rotation_R>Sspeed-500
+      
+;FOLD LIN P55 CONT Vel=0.02 m/s CPDAT54 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P55; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT54; Kuka.VelocityPath=0.02; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT54
+FDAT_ACT = FP55
+BAS(#CP_PARAMS, 0.02)
+SET_CD_PARAMS (0)
+LIN XP55 C_Dis C_Dis
+;ENDFOLD
+   FOR j5 = 1 TO TIMES5+1 STEP 1
+      LIN XP55
+      WAIT SEC 0 
+      ESpos = InitLen5+(j5-1)*Ofs
+      MonRef = ESpos
+      PassNo = j5
+      WAIT SEC 0.1
+      ;WAIT FOR (Rposition>(Spos-10)) AND (Rposition < (Spos + 10))      
+;FOLD LIN P56 CONT Vel=0.06 m/s CPDAT55 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P56; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT55; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT55
+FDAT_ACT = FP56
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP56 C_Dis C_Dis
+;ENDFOLD
+      WAIT SEC 0.1
+   PassNo = -15
+      LIN XP55
+   ENDFOR
+   ;----xin zeng buchong damo ----
+   IF RemainLen5 >= 0 THEN
+      FOR RetryCount5 = 1 TO 10 STEP 1
+         LIN XP55
+         WAIT SEC 0
+         ESpos  = InitLen5 + TIMES5 * Ofs + RemainLen5   ; = InitLen5 + LENGTH5
+         MonRef = ESpos
+         PassNo = TIMES5 + 1 + RetryCount5 +10 
+         WAIT SEC 0.1
+         DIS52  = ERpos   
+;FOLD LIN P56 CONT Vel=0.06 m/s CPDAT58 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P56; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT58; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT58
+FDAT_ACT = FP56
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP56 C_Dis C_Dis
+;ENDFOLD
+         WAIT SEC 0.1
+         DIS51 = ERpos   
+         IF ((InitLen5 + LENGTH5 - DIS51) < 5) AND ((InitLen5 + LENGTH5 - DIS52) < 5) THEN
+            WAIT SEC 0
+   PassNo = -15
+            LIN XP55
+            EXIT
+         ENDIF
+         WAIT SEC 0
+   PassNo = -15
+         LIN XP55
+      ENDFOR
+      WAIT SEC 0
+   PassNo = -15
+   ENDIF
+   ;----xin zeng buchong damo ----
+   WAIT SEC 0
+   PassNo = -15
+      
+;FOLD LIN P54 Vel=0.1 m/s CPDAT56 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P54; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT56; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT56
+FDAT_ACT = FP54
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP54
+;ENDFOLD
+   WAIT SEC 0
+   ;Sspeed = 0
+;FOLD SPTP P61 Vel=100 % PDAT6 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P61; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT6; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP61 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP61), $BASE = SBASE(FP61.BASE_NO), $IPO_MODE = SIPO_MODE(FP61.IPO_FRAME), $LOAD = SLOAD(FP61.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT6), $APO = SAPO_PTP(PPDAT6), $GEAR_JERK[1] = SGEAR_JERK(PPDAT6), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0
+
+;---- Grinding station 6 ----
+   PassNo = -16       ; da mo gong wei 6 : fei da mo duan
+   ESpos = InitLen6
+;FOLD LIN P64 Vel=0.1 m/s CPDAT63 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P64; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT63; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT63
+FDAT_ACT = FP64
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP64
+;ENDFOLD
+   ;Sspeed=8000
+   ;WAIT FOR Rotation_R>Sspeed-500
+  
+;FOLD LIN P65 Vel=0.02 m/s CPDAT64 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P65; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT64; Kuka.VelocityPath=0.02; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT64
+FDAT_ACT = FP65
+BAS(#CP_PARAMS, 0.02)
+SET_CD_PARAMS (0)
+LIN XP65
+;ENDFOLD
+   FOR j6 = 1 TO TIMES6+1 STEP 1
+      LIN XP65
+      WAIT SEC 0 
+      ESpos  = InitLen6+(j6-1)*Ofs
+      MonRef = ESpos
+      PassNo = j6
+      WAIT SEC 0.1
+      ;WAIT FOR (Rposition>(Spos-10)) AND (Rposition < (Spos + 10))
+;FOLD LIN P66 CONT Vel=0.06 m/s CPDAT65 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P66; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT65; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT65
+FDAT_ACT = FP66
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP66 C_Dis C_Dis
+;ENDFOLD
+      WAIT SEC 0.1
+   PassNo = -16
+      LIN XP65
+   ENDFOR
+   ;----xin zeng buchong damo ----
+   IF RemainLen6 >= 0 THEN
+      FOR RetryCount6 = 1 TO 10 STEP 1
+         LIN XP65
+         WAIT SEC 0
+         ESpos  = InitLen6 + TIMES6 * Ofs + RemainLen6   ; = InitLen6 + LENGTH6
+         MonRef = ESpos
+         PassNo = TIMES6 + 1 + RetryCount6 +10 
+         WAIT SEC 0.1
+         DIS62 = ERpos   
+;FOLD LIN P66 CONT Vel=0.06 m/s CPDAT65 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P66; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT65; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT65
+FDAT_ACT = FP66
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP66 C_Dis C_Dis
+;ENDFOLD
+         WAIT SEC 0.1
+         DIS61 = ERpos   
+         IF ((InitLen6 + LENGTH6 - DIS61) < 5) AND ((InitLen6 + LENGTH6 - DIS62) < 5) THEN
+            WAIT SEC 0
+   PassNo = -16
+            LIN XP65
+            EXIT
+         ENDIF
+         WAIT SEC 0
+   PassNo = -16
+         LIN XP65
+      ENDFOR
+      WAIT SEC 0
+   PassNo = -16
+   ENDIF
+   ;----xin zeng buchong damo ---- 
+   WAIT SEC 0
+   PassNo = -16
+   
+;FOLD LIN P64 Vel=0.1 m/s CPDAT66 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P64; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT66; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT66
+FDAT_ACT = FP64
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP64
+;ENDFOLD
+   WAIT SEC 0
+   ;Sspeed = 0
+;FOLD SPTP P71 Vel=100 % PDAT7 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P71; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT7; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP71 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP71), $BASE = SBASE(FP71.BASE_NO), $IPO_MODE = SIPO_MODE(FP71.IPO_FRAME), $LOAD = SLOAD(FP71.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT7), $APO = SAPO_PTP(PPDAT7), $GEAR_JERK[1] = SGEAR_JERK(PPDAT7), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0
+
+;---- Grinding station 7 ----
+   PassNo = -17       ; da mo gong wei 7 : fei da mo duan
+   ESpos = InitLen7
+;FOLD LIN P74 Vel=0.1 m/s CPDAT73 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P74; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT73; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT73
+FDAT_ACT = FP74
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP74
+;ENDFOLD
+   ;Sspeed=8000
+   ;WAIT FOR Rotation_R>Sspeed-500 
+   
+;FOLD LIN P75 Vel=0.02 m/s CPDAT74 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P75; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT74; Kuka.VelocityPath=0.02; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT74
+FDAT_ACT = FP75
+BAS(#CP_PARAMS, 0.02)
+SET_CD_PARAMS (0)
+LIN XP75
+;ENDFOLD
+   FOR j7 = 1 TO TIMES7+1 STEP 1
+      LIN XP75
+      WAIT SEC 0 
+      ESpos = InitLen7+(j7-1)*Ofs
+      MonRef = ESpos
+      PassNo = j7
+      WAIT SEC 0.1
+      ;WAIT FOR (Rposition>(Spos-10)) AND (Rposition < (Spos + 10))
+;FOLD LIN P76 CONT Vel=0.06 m/s CPDAT75 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P76; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT75; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT75
+FDAT_ACT = FP76
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP76 C_Dis C_Dis
+;ENDFOLD
+      WAIT SEC 0.1
+   PassNo = -17
+      LIN XP75
+   ENDFOR
+   ;----xin zeng buchong damo ----
+   IF RemainLen7 >= 0 THEN
+      FOR RetryCount7 = 1 TO 10 STEP 1
+         LIN XP75
+         WAIT SEC 0
+         ESpos  = InitLen7 + TIMES7 * Ofs + RemainLen7   ; = InitLen7 + LENGTH7
+         MonRef = ESpos
+         PassNo = TIMES7 + 1 + RetryCount7 +10 
+         WAIT SEC 0.1
+         DIS72 = ERpos   
+;FOLD LIN P76 CONT Vel=0.06 m/s CPDAT75 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P76; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT75; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT75
+FDAT_ACT = FP76
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP76 C_Dis C_Dis
+;ENDFOLD
+         WAIT SEC 0.1
+         DIS71 = ERpos   
+         IF ((InitLen7 + LENGTH7 - DIS71) < 5) AND ((InitLen7 + LENGTH7 - DIS72) < 5) THEN
+            WAIT SEC 0
+   PassNo = -17
+            LIN XP75
+            EXIT
+         ENDIF
+         WAIT SEC 0
+   PassNo = -17
+         LIN XP75
+      ENDFOR
+      WAIT SEC 0
+   PassNo = -17
+   ENDIF
+   ;----xin zeng buchong damo ----
+   WAIT SEC 0
+   PassNo = -17
+   
+;FOLD LIN P74 Vel=0.1 m/s CPDAT76 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P74; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT76; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT76
+FDAT_ACT = FP74
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP74
+;ENDFOLD
+   WAIT SEC 0
+   ;Sspeed = 0
+;FOLD SPTP P81 Vel=100 % PDAT8 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P81; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT8; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP81 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP81), $BASE = SBASE(FP81.BASE_NO), $IPO_MODE = SIPO_MODE(FP81.IPO_FRAME), $LOAD = SLOAD(FP81.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT8), $APO = SAPO_PTP(PPDAT8), $GEAR_JERK[1] = SGEAR_JERK(PPDAT8), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0
+
+;---- Grinding station 8 ----
+   PassNo = -18       ; da mo gong wei 8 : fei da mo duan
+   ESpos = InitLen8
+;FOLD LIN P84 Vel=0.1 m/s CPDAT83 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P84; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT83; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT83
+FDAT_ACT = FP84
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP84
+;ENDFOLD
+   ;Sspeed=8000
+   ;WAIT FOR Rotation_R>Sspeed-500
+   
+;FOLD LIN P85 Vel=0.02 m/s CPDAT84 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P85; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT84; Kuka.VelocityPath=0.02; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT84
+FDAT_ACT = FP85
+BAS(#CP_PARAMS, 0.02)
+SET_CD_PARAMS (0)
+LIN XP85
+;ENDFOLD
+   FOR j8 = 1 TO TIMES8+1 STEP 1
+      LIN XP85
+      WAIT SEC 0 
+      ESpos  = InitLen8+(j8-1)*Ofs
+      MonRef = ESpos
+      PassNo = j8
+      WAIT SEC 0.1
+      ;WAIT FOR (Rposition>(Spos-10)) AND (Rposition < (Spos + 10))
+;FOLD LIN P86 CONT Vel=0.06 m/s CPDAT85 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P86; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT85; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT85
+FDAT_ACT = FP86
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP86 C_Dis C_Dis
+;ENDFOLD
+      WAIT SEC 0.1
+   PassNo = -18
+      LIN XP85
+   ENDFOR
+   ;----xin zeng buchong damo ----
+   IF RemainLen8 >= 0 THEN
+      FOR RetryCount8 = 1 TO 10 STEP 1
+         LIN XP85
+         WAIT SEC 0
+         ESpos  = InitLen8 + TIMES8 * Ofs + RemainLen8   ; = InitLen8 + LENGTH8
+         MonRef = ESpos
+         PassNo = TIMES8 + 1 + RetryCount8 +10 
+         WAIT SEC 0.1
+         DIS82 = ERpos   
+;FOLD LIN P86 CONT Vel=0.06 m/s CPDAT85 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P86; Kuka.BlendingEnabled=True; Kuka.MoveDataName=CPDAT85; Kuka.VelocityPath=0.06; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT85
+FDAT_ACT = FP86
+BAS(#CP_PARAMS, 0.06)
+SET_CD_PARAMS (0)
+LIN XP86 C_Dis C_Dis
+;ENDFOLD
+         WAIT SEC 0.1
+         DIS81 = ERpos   
+         IF ((InitLen8 + LENGTH8 - DIS81) < 5) AND ((InitLen8 + LENGTH8 - DIS82) < 5) THEN
+            WAIT SEC 0
+   PassNo = -18
+            LIN XP85
+            EXIT
+         ENDIF
+         WAIT SEC 0
+   PassNo = -18
+         LIN XP85
+      ENDFOR
+      WAIT SEC 0
+   PassNo = -18
+   ENDIF
+   ;----xin zeng buchong damo ----
+   WAIT SEC 0
+   PassNo = -18
+   
+;FOLD LIN P84 Vel=0.1 m/s CPDAT86 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.old; Kuka.IsGlobalPoint=False; Kuka.PointName=P84; Kuka.BlendingEnabled=False; Kuka.MoveDataName=CPDAT86; Kuka.VelocityPath=0.1; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=LIN
+;ENDFOLD
+$BWDSTART = FALSE
+LDAT_ACT = LCPDAT86
+FDAT_ACT = FP84
+BAS(#CP_PARAMS, 0.1)
+SET_CD_PARAMS (0)
+LIN XP84
+;ENDFOLD
+   WAIT SEC 0
+   Sspeed = 0
+   RecordOn = FALSE
+;---- Final move to station 5 P51 ----
+;FOLD SPTP P51 Vel=100 % PDAT5 Tool[4]:Tool4 Base[3]:Base3 ;%{PE}
+;FOLD Parameters ;%{h}
+;Params IlfProvider=kukaroboter.basistech.inlineforms.movement.spline; Kuka.IsGlobalPoint=False; Kuka.PointName=P51; Kuka.BlendingEnabled=False; Kuka.MoveDataPtpName=PDAT5; Kuka.VelocityPtp=100; Kuka.VelocityFieldEnabled=True; Kuka.ColDetectFieldEnabled=True; Kuka.CurrentCDSetIndex=0; Kuka.MovementParameterFieldEnabled=True; IlfCommand=SPTP
+;ENDFOLD
+SPTP XP51 WITH $VEL_AXIS[1] = SVEL_JOINT(100.0), $TOOL = STOOL2(FP51), $BASE = SBASE(FP51.BASE_NO), $IPO_MODE = SIPO_MODE(FP51.IPO_FRAME), $LOAD = SLOAD(FP51.TOOL_NO), $ACC_AXIS[1] = SACC_JOINT(PPDAT5), $APO = SAPO_PTP(PPDAT5), $GEAR_JERK[1] = SGEAR_JERK(PPDAT5), $COLLMON_TOL_PRO[1] = USE_CM_PRO_VALUES(0)
+;ENDFOLD
+   WAIT SEC 0
+END
+
+DEFFCT REAL GetHFZ()
+   DECL REAL RES
+   RES = LV2 - (LV1+LV3)/2
+   RETURN RES
+ENDFCT

@@ -1,0 +1,128 @@
+&ACCESS RVP
+&COMMENT PLC on control
+DEF  SPS ( )
+  ;FOLD DECLARATIONS
+  ;FOLD BASISTECH DECL
+  ;Automatik extern
+  DECL STATE_T STAT
+  DECL MODUS_T MODE
+  ;ENDFOLD (BASISTECH DECL)
+  ;FOLD USER DECL
+  ; Please insert user defined declarations
+  DECL EKI_STATUS RET_EKI
+  DECL INT  nPosR
+  DECL INT  nForceR
+  DECL BOOL bEKI_Init
+  DECL INT  nCycleCount
+  ;ENDFOLD (USER DECL)
+  ;ENDFOLD (DECLARATIONS)
+  ;FOLD INI
+  ;FOLD BASISTECH INIT
+  BasisTech_PLC_INIT()
+  ;ENDFOLD (BASISTECH INIT)
+  ;FOLD AUTOEXT INIT
+  INTERRUPT DECL 91 WHEN $PRO_STATE1==#P_FREE DO RESET_OUT ()
+  INTERRUPT ON 91
+  INTERRUPT DECL 92 WHEN $PRO_MOVE==TRUE DO RESET_LINESEL()
+  INTERRUPT ON 92
+  $LOOP_MSG[]="                                                            "
+  MODE=#SYNC
+  $H_POS=$H_POS
+  ;Automatik extern
+  IF $MODE_OP==#EX THEN
+    CWRITE($CMD,STAT,MODE,"RUN /R1/CELL()")
+  ENDIF
+  ;ENDFOLD (AUTOEXT INIT)
+  ;FOLD BACKUPMANAGER PLC INIT
+  BM_ENABLED = FALSE
+  BM_OUTPUTVALUE = 0
+  ;ENDFOLD (BACKUPMANAGER PLC INIT)
+  ;FOLD USER INIT
+  ; Please insert user defined initialization commands
+  bEKI_Init   = FALSE
+  nCycleCount = 0
+  nPosR       = 0
+  nForceR     = 0
+  ;ENDFOLD (USER INIT)
+  ;ENDFOLD (INI)
+
+  LOOP
+    WAIT FOR NOT($POWER_FAIL)
+	;FOLD BASISTECH PLC
+	   BasisTech_PLC_LOOP()
+	;ENDFOLD (BASISTECH PLC)
+    ;FOLD BACKUPMANAGER PLC
+    IF BM_ENABLED THEN
+      BM_OUTPUTSIGNAL = BM_OUTPUTVALUE
+    ENDIF
+    ;ENDFOLD (BACKUPMANAGER PLC)
+    ;FOLD USER PLC
+    ;Make your modifications here
+
+    ; --- EKI 初始化（只执行一次）---
+    IF NOT bEKI_Init THEN
+      RET_EKI = EKI_Init("ECMMonitor")
+      RET_EKI = EKI_Open("ECMMonitor")
+      bEKI_Init = TRUE
+    ENDIF
+
+    ; --- 连接存活时采集并发送 ---
+    IF $FLAG[10] THEN
+
+        ; --- 同一时刻接收,保证一帧内各值同源 ---
+        nPosR     = ToSigned(POSITION_R_ETH)
+        nForceR   = ToSigned(FORCE_R_ETH)
+        bRecordOn = RecordOn
+        nPassNo   = PassNo
+        nEsPos    = MonRef
+        ; --- 写入EKI缓冲区 ---
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/PosR",     nPosR)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/ForceR",   nForceR)
+        RET_EKI = EKI_SetBool("ECMMonitor", "ECM/RecordOn", bRecordOn)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/PassNo",   nPassNo)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/EsPos",    nEsPos)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/WeldH",    ECM_WeldH)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/BaseH",    ECM_BaseH)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/Misalign", ECM_Misalign)
+        RET_EKI = EKI_SetInt ("ECMMonitor", "ECM/Rounds",   ECM_Rounds)
+        RET_EKI = EKI_Send("ECMMonitor", "ECM")
+        
+    ELSE
+        RET_EKI = EKI_Open("ECMMonitor")
+    ENDIF
+
+    ;ENDFOLD (USER PLC)
+    
+    
+  ENDLOOP
+  ;FOLD ;%{H}
+  ;FOLD
+END
+  ;ENDFOLD
+
+
+DEF  RESET_OUT ( )
+  INT N
+  MsgLoop(" ")
+  IF REFLECT_PROG_NR == 1 THEN
+    FOR N = 0 TO PGNO_LENGTH - 1
+      $OUT[PGNO_FBIT_REFL + N] = FALSE
+    ENDFOR
+  ENDIF
+  IF (PGNO_REQ>0) THEN
+    $OUT[PGNO_REQ]=FALSE
+  ELSE
+    IF (PGNO_REQ<0) THEN
+      $OUT[-PGNO_REQ]=TRUE
+    ENDIF
+  ENDIF
+END
+
+DEF RESET_LINESEL()
+  $LINE_SEL_OK=FALSE
+END
+;FOLD USER SUBROUTINE
+; Integrate your user defined subroutines
+
+;ENDFOLD (USER SUBROUTINE)
+;ENDFOLD

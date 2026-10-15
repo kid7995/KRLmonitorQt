@@ -1,0 +1,31 @@
+<ETHERNETKRL>
+    <CONFIGURATION>
+        <EXTERNAL>
+            <IP>192.168.1.100</IP>      <!-- 外部PC的IP地址，KUKA主动连接这里，根据实际修改 -->
+            <PORT>65002</PORT>          <!-- 外部PC监听的端口，可自由选择，与Python脚本一致即可 -->
+        </EXTERNAL>
+        <INTERNAL>
+            <ENVIRONMENT>Submit</ENVIRONMENT>       <!-- 提交解释器模式，与SPS.sub配套 -->
+            <TIMEOUT Connect="60000"/>              <!-- 连接超时60秒 -->
+            <ALIVE Set_Flag="10"/>                  <!-- 连接存活时$FLAG[10]=TRUE，断线自动清零 -->
+            <MESSAGES Logging="disabled" Display="disabled"/>  <!-- 关闭日志避免干扰 -->
+        </INTERNAL>
+    </CONFIGURATION>
+
+    <!-- 发送给外部PC的数据结构 -->
+    <!-- KUKA主动连接并发送，外部PC作为服务器接收 -->
+    <SEND>
+        <XML>
+            <ELEMENT Tag="ECM/PosR"/>               <!-- nPosR ← POSITION_R_ETH  $IN[2616]~[2647] 32位位置反馈 -->
+            <ELEMENT Tag="ECM/ForceR"/>             <!-- nForceR ← FORCE_R_ETH   $IN[2664]~[2679] 16位力反馈 -->
+            <ELEMENT Tag="ECM/RecordOn"/>           <!-- RecordOn BOOL 记录触发标志（时间轴对齐用） -->
+            <ELEMENT Tag="ECM/PassNo"/>             <!-- INT 打磨轮次号，0=非打磨段 -->
+            <ELEMENT Tag="ECM/EsPos"/>              <!-- INT 力控位置设定值 ESpos -->
+            <ELEMENT Tag="ECM/WeldH"/>              <!-- INT 焊缝高度 mm -->
+            <ELEMENT Tag="ECM/BaseH"/>              <!-- INT 基材高度（0.01mm 位置量，=Baseheight_k） -->
+            <ELEMENT Tag="ECM/Misalign"/>           <!-- INT 错边量 mm（可负） -->
+            <ELEMENT Tag="ECM/Rounds"/>             <!-- INT 打磨轮次（计划值 =TIMES_k） -->
+        </XML>
+    </SEND>
+
+</ETHERNETKRL>
