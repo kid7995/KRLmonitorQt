@@ -508,7 +508,8 @@ QWidget* MainWindow::buildGroupsPanel() {
     auto* scroll = new QScrollArea(outer);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // 允许在必要时横向滚动：面板比行内容窄时，宁可出滚动条也不要把内容裁掉
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scroll->setStyleSheet(QStringLiteral("QScrollArea{background:transparent;}"));
     m_cardsWidget = new QWidget(scroll);
     m_cardsLayout = new QVBoxLayout(m_cardsWidget);
@@ -694,9 +695,9 @@ void MainWindow::refreshSeamChips() {
         // 行内摘要：几号焊缝 + 正常道数/补充次数 + 检测的焊缝高度
         QString txt = QStringLiteral("%1").arg(k);
         if (has) {
-            txt += QStringLiteral("    正常 %1 道").arg(s->normalN);
+            txt += QStringLiteral("    %1 道").arg(s->normalN);
             if (s->retryN > 0) {
-                txt += QStringLiteral(" · 补 %1").arg(s->retryN);
+                txt += QStringLiteral(" · 补%1").arg(s->retryN);
             }
             if (s->hasValues && s->weldHum != DETECT_UNSET) {
                 txt += QStringLiteral("    %1 mm").arg(s->weldHum / 1000.0, 0, 'f', 3);
@@ -1263,7 +1264,7 @@ void MainWindow::refreshGroupsPanel() {
         // 参与对比显示（组级可见性）：眼睛图标，开=强调色，关=灰
         auto* visBtn = new QPushButton(card);
         visBtn->setCursor(Qt::PointingHandCursor);
-        visBtn->setFixedSize(24, 24);
+        visBtn->setFixedSize(22, 22);
         visBtn->setIcon(icons::get(g->visible ? QStringLiteral("eye") : QStringLiteral("eye-off"),
                                    g->visible ? theme::C_INFO : theme::C_DIM));
         visBtn->setIconSize(QSize(18, 18));
@@ -1275,7 +1276,7 @@ void MainWindow::refreshGroupsPanel() {
         titleRow->addWidget(visBtn, 0, Qt::AlignTop);
         // 徽章：组色 + 状态（🔴 记录中 / ✓ 已存档 / ⚠ 断线强制封存，数据可能不完整）
         // 组标签只留短标识，状态另用一个圆点表达（红=记录中 / 橙=不完整 / 绿=已存档）
-        QString badge = pal.label;
+        QString badge = QStringLiteral("组%1").arg(g->paletteIdx + 1);
         QString dotColor = theme::C_DIM.name();
         QString dotTip = QStringLiteral("未处理");
         if (g->live) {
@@ -1294,18 +1295,23 @@ void MainWindow::refreshGroupsPanel() {
             card->setToolTip(g->partLabel);
         }
         auto* badgeLbl = new QLabel(badge, card);
+        badgeLbl->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
         badgeLbl->setStyleSheet(QStringLiteral(
-            "background-color:%1;color:#FFFFFF;border-radius:3px;padding:1px 6px;"
-            "font-weight:600;font-size:8pt;").arg(accent));
+            "background-color:%1;color:#FFFFFF;border-radius:3px;padding:1px 4px;"
+            "font-weight:600;font-size:7pt;").arg(accent));
         titleRow->addWidget(badgeLbl);
         auto* dotLbl = new QLabel(QStringLiteral("●"), card);
         dotLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(dotColor));
         dotLbl->setToolTip(dotTip);
         titleRow->addWidget(dotLbl);
         QString shortName = g->name;
-        if (shortName.size() > 20) shortName = shortName.left(18) + QStringLiteral("…");
+        if (shortName.size() > 16) shortName = shortName.left(15) + QStringLiteral("…");
         auto* nameLbl = new QLabel(shortName, card);
+        // 让名称先被压缩（而不是把旁边的星标/删除按钮挤掉）：必要时由 Qt 省略
+        nameLbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        nameLbl->setMinimumWidth(0);
         nameLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_TEXT.name()));
+        nameLbl->setToolTip(g->name);
         titleRow->addWidget(nameLbl, 1);
         // ★ 参考组：曲线上的焊缝分界、道次标注与叠道对比都以它为准
         const bool isRef = (i == refGroupIdx());
