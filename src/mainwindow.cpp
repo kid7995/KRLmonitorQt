@@ -111,7 +111,7 @@ QPushButton* makeBtn(const QString& text, BtnKind kind = BtnKind::Ghost,
     }
     if (!icon.isEmpty()) {
         b->setIcon(icons::get(icon, iconColor));
-        b->setIconSize(QSize(16, 16));
+        b->setIconSize(QSize(18, 18));
     }
     return b;
 }
@@ -1119,25 +1119,33 @@ void MainWindow::refreshGroupsPanel() {
 
         // 标题行：徽章 + 文件名 + 删除
         auto* titleRow = new QHBoxLayout();
-        // 参与对比显示（组级可见性）
-        auto* visBtn = new QPushButton(g->visible ? QStringLiteral("◉") : QStringLiteral("○"), card);
-        visBtn->setCheckable(true);
-        visBtn->setChecked(g->visible);
+        // 参与对比显示（组级可见性）：眼睛图标，开=强调色，关=灰
+        auto* visBtn = new QPushButton(card);
         visBtn->setCursor(Qt::PointingHandCursor);
-        visBtn->setFixedSize(20, 20);
+        visBtn->setFixedSize(24, 24);
+        visBtn->setIcon(icons::get(g->visible ? QStringLiteral("eye") : QStringLiteral("eye-off"),
+                                   g->visible ? theme::C_INFO : theme::C_DIM));
+        visBtn->setIconSize(QSize(18, 18));
         visBtn->setToolTip(QStringLiteral("参与对比显示（关闭后整组不画，也不参与坐标范围）"));
         visBtn->setStyleSheet(QStringLiteral(
-            "QPushButton{background:transparent;border:none;color:%1;font-size:11pt;font-weight:bold;}"
-            "QPushButton:checked{color:%2;}")
-            .arg(theme::C_DIM.name(), accent));
+            "QPushButton{background:transparent;border:none;}"
+            "QPushButton:hover{background:%1;border-radius:4px;}").arg(theme::C_HOVER.name()));
         connect(visBtn, &QPushButton::clicked, this, [this, i]() { toggleGroupVisible(i); });
         titleRow->addWidget(visBtn, 0, Qt::AlignTop);
         // 徽章：组色 + 状态（🔴 记录中 / ✓ 已存档 / ⚠ 断线强制封存，数据可能不完整）
-        QString badge = pal.label + (g->live ? QStringLiteral("🔴") : QString());
-        if (g->incomplete) {
-            badge += QStringLiteral("⚠");
+        // 组标签只留短标识，状态另用一个圆点表达（红=记录中 / 橙=不完整 / 绿=已存档）
+        QString badge = pal.label;
+        QString dotColor = theme::C_DIM.name();
+        QString dotTip = QStringLiteral("未处理");
+        if (g->live) {
+            dotColor = theme::C_REC.name();
+            dotTip = QStringLiteral("正在记录");
+        } else if (g->incomplete) {
+            dotColor = theme::C_WARN_HI.name();
+            dotTip = QStringLiteral("断线/异常封存，数据可能不完整");
         } else if (g->saved) {
-            badge += QStringLiteral("✓");
+            dotColor = theme::C_OK.name();
+            dotTip = QStringLiteral("已存档：%1").arg(QFileInfo(g->savedPath).fileName());
         }
         if (!g->savedPath.isEmpty()) {
             card->setToolTip(QStringLiteral("已存档：%1").arg(g->savedPath));
@@ -1145,9 +1153,14 @@ void MainWindow::refreshGroupsPanel() {
             card->setToolTip(g->partLabel);
         }
         auto* badgeLbl = new QLabel(badge, card);
-        badgeLbl->setStyleSheet(QStringLiteral("background-color:%1;color:%2;padding:1px 5px;font-weight:bold;font-size:8pt;")
-                                .arg(accent, theme::BG.name()));
+        badgeLbl->setStyleSheet(QStringLiteral(
+            "background-color:%1;color:#FFFFFF;border-radius:3px;padding:1px 6px;"
+            "font-weight:600;font-size:8pt;").arg(accent));
         titleRow->addWidget(badgeLbl);
+        auto* dotLbl = new QLabel(QStringLiteral("●"), card);
+        dotLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(dotColor));
+        dotLbl->setToolTip(dotTip);
+        titleRow->addWidget(dotLbl);
         QString shortName = g->name;
         if (shortName.size() > 20) shortName = shortName.left(18) + QStringLiteral("…");
         auto* nameLbl = new QLabel(shortName, card);
@@ -1177,42 +1190,28 @@ void MainWindow::refreshGroupsPanel() {
         titleRow->addWidget(delBtn, 0, Qt::AlignTop);
         cv->addLayout(titleRow);
 
-        // 色块行
-        auto* swatch = new QHBoxLayout();
-        auto* posBar = new QLabel(QString(), card);
-        posBar->setFixedSize(30, 3);
-        posBar->setStyleSheet(QStringLiteral("background-color:%1;").arg(pal.pos.name()));
-        swatch->addWidget(posBar);
-        auto* posLbl = new QLabel(QStringLiteral("PosR"), card);
-        posLbl->setStyleSheet(QStringLiteral("color:%1;font-size:7pt;").arg(pal.pos.name()));
-        swatch->addWidget(posLbl);
-        swatch->addSpacing(8);
-        auto* forceBar = new QLabel(QString(), card);
-        forceBar->setFixedSize(30, 3);
-        forceBar->setStyleSheet(QStringLiteral("background-color:%1;").arg(pal.force.name()));
-        swatch->addWidget(forceBar);
-        auto* forceLbl = new QLabel(QStringLiteral("ForceR"), card);
-        forceLbl->setStyleSheet(QStringLiteral("color:%1;font-size:7pt;").arg(pal.force.name()));
-        swatch->addWidget(forceLbl);
-        swatch->addStretch();
+        // 第二行：副信息（点数/道次）+ PosR/ForceR 开关
+        // （原来那行"两条 30×3 色块 + 7pt 小字"信息量低又显碎，去掉）
+        auto* metaRow = new QHBoxLayout();
+        metaRow->setSpacing(6);
         auto* ptsLbl = new QLabel(g->times.isEmpty()
-                                  ? QStringLiteral("采集中…")
-                                  : QStringLiteral("%1 pts").arg(theme::formatThousands(g->len())), card);
-        ptsLbl->setStyleSheet(QStringLiteral("color:%1;font-size:7pt;").arg(theme::C_DIM.name()));
-        swatch->addWidget(ptsLbl);
-        cv->addLayout(swatch);
-
-        // 按钮行
-        auto* btnRow = new QHBoxLayout();
+                                      ? QStringLiteral("采集中…")
+                                      : QStringLiteral("%1 pts · %2 道")
+                                            .arg(theme::formatThousands(g->len()))
+                                            .arg(g->passes.size()),
+                                  card);
+        ptsLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
+        metaRow->addWidget(ptsLbl);
+        metaRow->addStretch();
         auto* btnPos = new QPushButton(QString(), card);
         btnPos->setCursor(Qt::PointingHandCursor);
         connect(btnPos, &QPushButton::clicked, this, [this, i]() { toggleGroupPos(i); });
-        btnRow->addWidget(btnPos);
+        metaRow->addWidget(btnPos);
         auto* btnForce = new QPushButton(QString(), card);
         btnForce->setCursor(Qt::PointingHandCursor);
         connect(btnForce, &QPushButton::clicked, this, [this, i]() { toggleGroupForce(i); });
-        btnRow->addWidget(btnForce);
-        cv->addLayout(btnRow);
+        metaRow->addWidget(btnForce);
+        cv->addLayout(metaRow);
 
         stylePosButton(btnPos, g);
         styleForceButton(btnForce, g);
