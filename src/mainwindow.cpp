@@ -469,14 +469,14 @@ void MainWindow::buildSeamPanel() {
     m_seamLayout->setSpacing(3);
     v->addWidget(m_seamWidget);
 
-    // 8 个 chip 常驻：显示"几号焊缝"，同时兼任"曲线里显示哪些焊缝"的开关。
-    // 默认全选（= 不过滤）；点一下取消该焊缝的曲线。
+    // 8 个 chip 常驻：显示"几号焊缝"，同时兼任"突出显示哪条焊缝"的开关。
+    // 默认一个都不选 = 全部正常显示；点某号 → 这一段画粗画亮、其余淡化（仍然可见）。
     for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
         auto* b = new QPushButton(QString::number(k), m_seamWidget);
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedSize(32, 24);
-        b->setToolTip(QStringLiteral("焊缝 %1：点击切换是否在曲线中显示").arg(k));
+        b->setToolTip(QStringLiteral("焊缝 %1：点击把它的曲线突出显示（再点取消，可多选叠加）").arg(k));
         connect(b, &QPushButton::clicked, this, [this, k]() {
             setSeamSelected(k, !m_seamSel.contains(k));
         });
@@ -484,6 +484,7 @@ void MainWindow::buildSeamPanel() {
         m_seamChips.insert(k, b);
     }
     auto* btnAll = new QPushButton(QStringLiteral("全选"), m_seamWidget);
+    btnAll->setToolTip(QStringLiteral("突出全部焊缝（视觉上等同正常显示）"));
     btnAll->setCursor(Qt::PointingHandCursor);
     btnAll->setFixedHeight(24);
     btnAll->setStyleSheet(QString(
@@ -498,7 +499,8 @@ void MainWindow::buildSeamPanel() {
     });
     m_seamLayout->addWidget(btnAll);
 
-    auto* btnNone = new QPushButton(QStringLiteral("全不选"), m_seamWidget);
+    auto* btnNone = new QPushButton(QStringLiteral("取消突出"), m_seamWidget);
+    btnNone->setToolTip(QStringLiteral("清除突出显示，恢复全部正常显示"));
     btnNone->setCursor(Qt::PointingHandCursor);
     btnNone->setFixedHeight(24);
     btnNone->setStyleSheet(btnAll->styleSheet());
@@ -525,9 +527,7 @@ void MainWindow::buildSeamPanel() {
 
     m_rootLayout->addWidget(outer);
 
-    for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
-        m_seamSel.insert(k);      // 默认全选
-    }
+    m_seamSel.clear();            // 默认不突出任何焊缝 = 全部正常显示
     refreshSeamPanel();
 }
 
@@ -555,14 +555,28 @@ void MainWindow::applyViewFilters() {
     if (!m_chart) {
         return;
     }
-    // 8 条全选 = 不过滤：走原来的抽稀快路径；一旦有取消，才切到"逐段绘制"的拆分视图
-    QSet<int> eff;
-    if (m_seamSel.size() < SEAM_COUNT_MAX) {
-        eff = m_seamSel;
+    // 焊缝 chip = "突出显示"：选中的焊缝画得更粗更亮，其余淡化但**仍然显示**。
+    // 不隐藏任何曲线 → 坐标范围不变，不会出现"图是空的 / 坐标轴乱跳"。
+    // 8 条全选（或一个都不选）都表示"没有特别要突出的" → 全部正常显示。
+    QSet<int> focus = m_seamSel;
+    if (focus.size() >= SEAM_COUNT_MAX) {
+        focus.clear();
     }
-    m_chart->setSeamFilter(eff);
+    m_chart->setSeamFocus(focus);
     m_chart->setPhaseView(m_phaseView);
     m_chart->setCraftView(m_craftView);
+
+    if (focus.isEmpty()) {
+        return;
+    }
+    QStringList names;
+    for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
+        if (focus.contains(k)) {
+            names << QString::number(k);
+        }
+    }
+    setStatus(QStringLiteral("已突出显示焊缝 %1 — 其余焊缝淡化显示（仍然可见），点\"取消突出\"恢复")
+              .arg(names.join(QStringLiteral("、"))));
 }
 
 void MainWindow::refreshSeamChips() {
@@ -631,6 +645,14 @@ void MainWindow::refreshSeamDetail() {
         return QStringLiteral("%1%2").arg(v < 0 ? QStringLiteral("-") : QStringLiteral("+"))
                                      .arg(qAbs(v), 0, 'f', 3);
     };
+    // KRL 侧用 -1 表示"还没检测/未赋值"（$config.dat 的初值），必须显示"—"，
+    // 不能算成 -0.001 mm / -1 轮这种假数据。
+    auto mmOrDash = [&mm](int um) {
+        return um == DETECT_UNSET ? QStringLiteral("—") : mm(um) + QStringLiteral(" mm");
+    };
+    auto intOrDash = [](int v) {
+        return v == DETECT_UNSET ? QStringLiteral("—") : theme::formatThousands(v);
+    };
 
     QStringList parts;
     parts << QStringLiteral("焊缝 %1").arg(seam);
@@ -638,10 +660,10 @@ void MainWindow::refreshSeamDetail() {
         parts << craftLabel(s->craft);
     }
     if (s->hasValues) {
-        parts << QStringLiteral("焊缝高度 %1 mm").arg(mm(s->weldHum));
-        parts << QStringLiteral("基材高度 %1").arg(theme::formatThousands(s->baseH));
-        parts << QStringLiteral("错边量 %1 mm").arg(mm(s->misalignUm));
-        parts << QStringLiteral("计划 %1 轮").arg(s->rounds);
+        parts << QStringLiteral("焊缝高度 %1").arg(mmOrDash(s->weldHum));
+        parts << QStringLiteral("基材高度 %1").arg(intOrDash(s->baseH));
+        parts << QStringLiteral("错边量 %1").arg(mmOrDash(s->misalignUm));
+        parts << QStringLiteral("计划 %1 轮").arg(intOrDash(s->rounds));
     } else if (s->detected) {
         parts << QStringLiteral("基准 %1（本程序未上报检测值）").arg(theme::formatThousands(s->detectEs));
     } else {

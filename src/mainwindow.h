@@ -164,7 +164,7 @@ private:
     QLabel* m_seamContext = nullptr;   // 数值栏：焊缝 k/8 · 阶段 · 第 n 遍
     QLabel* m_detectLabel = nullptr;   // 焊缝栏右侧：检测结果（高度/基材/错边/轮次）
     QHash<int, QPushButton*> m_seamChips;   // 焊缝号 -> chip
-    QSet<int> m_seamSel;               // 选中的焊缝（空 = 全部）
+    QSet<int> m_seamSel;               // 要"突出显示"的焊缝（空 = 全部正常显示）
     int m_detailSeam = 0;              // 右侧详情显示哪条焊缝（0 = 跟随当前）
     PhaseView m_phaseView = PhaseView::All;
     CraftView m_craftView = CraftView::All;

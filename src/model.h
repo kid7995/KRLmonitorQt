@@ -36,7 +36,8 @@ struct DetectVals {
 //   kind == None                         → 未标记段（等待 / 返回 / 空移；旧协议也全落这里）
 // 段与段覆盖全部样点且首尾相接，因此可以按"选中哪些段"重建要绘制的点集。
 struct Segment {
-    SeamPhase kind = SeamPhase::None;   // Detect / Grind(道次) / GrindGap / Transfer / Finish
+    // Detect / Grind(道次) / GrindGap / Transfer(空走) / Finish / Prepare(预备位) / Lift(抬起)
+    SeamPhase kind = SeamPhase::None;
     Craft craft = Craft::Unknown;       // 粗磨 / 细磨
     int seam = 0;                       // 1..8；0 = 未归属
     int passNo = 0;                     // kind == Grind 时为道次号，其余为 0

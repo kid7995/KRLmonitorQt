@@ -31,6 +31,12 @@ PassMark decodePassNo(int passNo) {
     } else if (a > SEAM_MARK_MOVE && a <= SEAM_MARK_MOVE + SEAM_COUNT_MAX) {
         base = SEAM_MARK_MOVE;
         phase = SeamPhase::Transfer;
+    } else if (a > SEAM_MARK_PREPARE && a <= SEAM_MARK_PREPARE + SEAM_COUNT_MAX) {
+        base = SEAM_MARK_PREPARE;                          // 41..48
+        phase = SeamPhase::Prepare;
+    } else if (a > SEAM_MARK_LIFT && a <= SEAM_MARK_LIFT + SEAM_COUNT_MAX) {
+        base = SEAM_MARK_LIFT;                             // 51..58
+        phase = SeamPhase::Lift;
     } else if (a > SEAM_MARK_DETECT_FINE && a <= SEAM_MARK_DETECT_FINE + SEAM_COUNT_MAX) {
         base = SEAM_MARK_DETECT_FINE;                      // 101..108
         phase = SeamPhase::Detect;
@@ -42,6 +48,14 @@ PassMark decodePassNo(int passNo) {
     } else if (a > SEAM_MARK_MOVE_FINE && a <= SEAM_MARK_MOVE_FINE + SEAM_COUNT_MAX) {
         base = SEAM_MARK_MOVE_FINE;                        // 121..128
         phase = SeamPhase::Transfer;
+        craft = Craft::Fine;
+    } else if (a > SEAM_MARK_PREPARE_FINE && a <= SEAM_MARK_PREPARE_FINE + SEAM_COUNT_MAX) {
+        base = SEAM_MARK_PREPARE_FINE;                      // 141..148
+        phase = SeamPhase::Prepare;
+        craft = Craft::Fine;
+    } else if (a > SEAM_MARK_LIFT_FINE && a <= SEAM_MARK_LIFT_FINE + SEAM_COUNT_MAX) {
+        base = SEAM_MARK_LIFT_FINE;                         // 151..158
+        phase = SeamPhase::Lift;
         craft = Craft::Fine;
     } else {
         return PassMark{SeamPhase::None, Craft::Unknown, 0};
@@ -59,7 +73,9 @@ QString seamPhaseLabel(SeamPhase p) {
     case SeamPhase::Detect:   return QStringLiteral("检测");
     case SeamPhase::Grind:    return QStringLiteral("打磨");
     case SeamPhase::GrindGap: return QStringLiteral("打磨间隙");
-    case SeamPhase::Transfer: return QStringLiteral("转移");
+    case SeamPhase::Transfer: return QStringLiteral("空走");
+    case SeamPhase::Prepare:  return QStringLiteral("预备位");
+    case SeamPhase::Lift:     return QStringLiteral("抬起");
     case SeamPhase::Finish:   return QStringLiteral("收尾");
     case SeamPhase::None:     break;
     }

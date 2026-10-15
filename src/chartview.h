@@ -32,10 +32,14 @@ public:
     void setZoomMode(const QString& mode) { m_zoomMode = mode; }
 
     // ── 拆分视图（按焊缝 / 按阶段 / 按工序过滤）──
-    void setSeamFilter(const QSet<int>& seams);   // 空集合 = 不过滤（显示全部焊缝）
+    // 焊缝"突出显示"：选中的焊缝照常画（更粗更亮），其余焊缝降到很淡的背景但**仍然可见**。
+    // 不隐藏任何数据 → 坐标范围也不变，避免"图是空的 / 坐标轴乱跳"。
+    // 空集合 = 不突出任何焊缝（全部正常显示）。
+    void setSeamFocus(const QSet<int>& seams);
     void setPhaseView(PhaseView v);
     void setCraftView(CraftView v);
-    bool filterActive() const;
+    bool filterActive() const;   // 阶段/工序过滤（这一种仍会隐藏不匹配的段）
+    bool focusActive() const;    // 是否处于"突出某几条焊缝"状态
 
     void setHoverActive(bool v) { m_hoverActive = v; if (!v) clearHover(); }
     bool hoverActive() const { return m_hoverActive; }
@@ -78,7 +82,6 @@ private:
 
     // 绘制
     void drawGrid(QPainter& p);
-    void drawPassBands(QPainter& p);
     void drawPassDividers(QPainter& p);
     void drawPassAnnotations(QPainter& p);
     void drawOverlay(QPainter& p);
@@ -91,7 +94,13 @@ private:
                    double lw, double alpha);
     // 过滤视图下按"段"分别绘制：段与段之间不连线，且按段类型区分明暗
     bool segmentVisible(const Segment& s) const;
+    bool segmentFocused(const Segment& s) const;
+    // 该焊缝在当前视图下是否有可见的段（决定装饰层画不画）
+    bool seamVisibleInView(const DataGroup& g, int seam) const;
+    bool passVisibleInView(const DataGroup& g, const Pass& p) const;
     void drawSegmented(QPainter& p, DataGroup* g);
+    // 正常视图下把"被突出的焊缝"那几段叠画一遍（更粗更亮）
+    void drawFocusSegments(QPainter& p, DataGroup* g);
     // 可见窗口 [m_x0, m_x1] 内的曲线数据：窗口点数 ≤ DISPLAY_MAX_PTS 时
     // 直接用原始点切片（放大后还原真实波形），否则走全范围抽稀缓存路径
     XY visibleXY(DecCache& cache, const QString& key,
@@ -110,7 +119,7 @@ private:
 
     bool m_showMonitor = true;
     bool m_showEsPos = true;
-    QSet<int> m_seamSel;                         // 选中的焊缝（空 = 全部）
+    QSet<int> m_seamFocus;                       // 需要突出显示的焊缝（空 = 全部正常显示）
     PhaseView m_phaseView = PhaseView::All;
     CraftView m_craftView = CraftView::All;
     bool m_overlayMode = false;

@@ -46,26 +46,50 @@ constexpr double ZOOM_FACTOR = 1.25;
 // 动画帧间隔（毫秒）
 constexpr int FRAME_INTERVAL_MS = 120;
 
+// ── 曲线浓淡（"突出显示某条焊缝"用）─────────────────────────────
+// 底色层永远用浅色：所以"一条焊缝都没选中"时整张图就是浅色的；
+// 选中某条焊缝后，它会被**叠画**一遍更粗、全不透明的线（ChartView::drawFocusSegments），
+// 其余焊缝保持浅色不变（既不隐藏、也不额外变暗）。
+constexpr double CURVE_BASE_ALPHA  = 0.45;   // 未突出的 PosR / ForceR
+constexpr double CURVE_ES_ALPHA    = 0.35;   // ESpos 阶梯线（次要信息，再浅一点）
+constexpr double CURVE_FOCUS_ALPHA = 1.0;    // 被突出的那一段
+
 // ── 焊缝（工位）标记 ─────────────────────────────────────────────
 // KRL 侧用 PassNo 的正负与数值区间同时表达"阶段"和"焊缝号"，详见 src/station.h。
 //     PassNo  = n > 0        打磨中：第 n 遍
 //     PassNo  = 0            未标记（旧程序 / 未分类段）
 //     PassNo  = -(k)         检测阶段：正在检测焊缝 k
 //     PassNo  = -(10 + k)    打磨阶段·非打磨段：焊缝 k 的道间返回 / 等待 / 接近
-//     PassNo  = -(20 + k)    工位间转移：正在转移到焊缝 k
+//     PassNo  = -(20 + k)    空走：正在转移到焊缝 k 的打磨预备位
+//     PassNo  = -(40 + k)    走到焊缝 k 的打磨预备位（KRL 下到 Pk4，Z=+40 抬高位）
+//     PassNo  = -(50 + k)    打磨后抬起（从打磨位回到 Pk4）
 //     PassNo  = -99          程序收尾
-constexpr int SEAM_COUNT_MAX  = 8;    // 焊缝数量上限（Part1 = 1..4，Part2 = 5..8）
-constexpr int SEAM_MARK_DETECT = 0;   // -k
-constexpr int SEAM_MARK_GRIND  = 10;  // -(10+k)
-constexpr int SEAM_MARK_MOVE   = 20;  // -(20+k)
-constexpr int SEAM_MARK_FINISH = 99;  // -99
+constexpr int SEAM_COUNT_MAX     = 8;    // 焊缝数量上限（Part1 = 1..4，Part2 = 5..8）
+constexpr int SEAM_MARK_DETECT   = 0;    // -k
+constexpr int SEAM_MARK_GRIND    = 10;   // -(10+k)
+constexpr int SEAM_MARK_MOVE     = 20;   // -(20+k) 空走/转移
+constexpr int SEAM_MARK_PREPARE  = 40;   // -(40+k) 走到打磨预备位
+constexpr int SEAM_MARK_LIFT     = 50;   // -(50+k) 打磨后抬起
+constexpr int SEAM_MARK_FINISH   = 99;   // -99
 
 // 细磨（XiMo）用同一套规则，只是整体加 100（工序位）：
 //     PassNo  = -(100 + k)    细磨 检测阶段，焊缝 k
 //     PassNo  = -(110 + k)    细磨 打磨阶段·非打磨段，焊缝 k
-//     PassNo  = -(120 + k)    细磨 工位间转移，焊缝 k
+//     PassNo  = -(120 + k)    细磨 空走，焊缝 k
+//     PassNo  = -(140 + k)    细磨 走到打磨预备位，焊缝 k
+//     PassNo  = -(150 + k)    细磨 打磨后抬起，焊缝 k
 //     PassNo  = -199          细磨 收尾
 constexpr int SEAM_MARK_DETECT_FINE = 100;  // -(100+k)
 constexpr int SEAM_MARK_GRIND_FINE  = 110;  // -(110+k)
 constexpr int SEAM_MARK_MOVE_FINE   = 120;  // -(120+k)
+constexpr int SEAM_MARK_PREPARE_FINE = 140; // -(140+k)
+constexpr int SEAM_MARK_LIFT_FINE    = 150; // -(150+k)
 constexpr int SEAM_MARK_FINISH_FINE = 199;  // -199
+
+// ── 检测结果的"未赋值"哨兵值 ────────────────────────────────────
+// KRL 侧把 4 个检测结果（ECM_WeldH/BaseH/Misalign/Rounds）初始化为 -1，
+// 含义是"本次还没检测过"（$config.dat: DECL INT ECM_WeldH = -1 …）。
+// 四个值在同一次检测块里一起写入，所以收到"全 -1"就说明这一帧还没有检测结果，
+// 界面必须显示"—"，不能显示成 -0.001 mm 这种假数据。
+// 注意：Rounds = 0（计划 0 轮）是**合法值**，只有 -1 才代表未赋值。
+constexpr int DETECT_UNSET = -1;

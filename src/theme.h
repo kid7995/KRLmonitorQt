@@ -9,6 +9,9 @@ namespace theme {
 
 // ── 界面基础色 ──────────────────────────────────────────────────
 inline const QColor BG(0x0d, 0x11, 0x17);      // 窗口/坐标区底色
+// 绘图区底色：曲线背后的统一淡蓝。整块同深度，不随焊缝/道次变化
+//（"哪一段属于哪条焊缝"由分界线、焊缝标注和焊缝 chip 表达，不靠底色深浅区分）。
+inline const QColor PLOT_BG(0x12, 0x1a, 0x25);
 inline const QColor PANEL(0x16, 0x1b, 0x22);   // 工具栏、卡片、图例底色
 inline const QColor BORDER(0x30, 0x36, 0x3d);  // 分隔线、边框、网格线
 inline const QColor C_TEXT(0xc9, 0xd1, 0xd9);  // 主文字

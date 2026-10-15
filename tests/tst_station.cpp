@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <QVector>
+#include <QStringList>
 
 #include "model.h"
 #include "station.h"
@@ -31,11 +32,13 @@ class StationTest : public QObject {
 private slots:
     void decodesMarkerRanges();
     void decodesFineCraftRanges();
+    void decodesGrindSubPhases();
     void negativeMarkersDoNotCreatePasses();
     void tracksSeamsAcrossDetectAndGrind();
     void stickyRetryNumbering();
     void legacyStreamWithoutMarkers();
     void buildsSegmentTable();
+    void grindingCycleSplitsBySeam();
     void detectSnapshotSurvivesRebuild();
 };
 
@@ -280,3 +283,79 @@ void StationTest::detectSnapshotSurvivesRebuild() {
     QCOMPARE(after->craft, Craft::Rough);
 }
 
+// 2026-10-15 新增：打磨阶段的细分子阶段
+//     -(40+k) 走到焊缝 k 的打磨预备位（KRL 下到 Pk4，Z=+40 抬高位）
+//     -(50+k) 打磨后抬起（从打磨位回到 Pk4）
+// 目的：把"一次完整打磨"拆成 空走 → 预备位 → 打磨 → 抬起，检测阶段保持整体不变。
+void StationTest::decodesGrindSubPhases() {
+    for (int k = 1; k <= 8; ++k) {
+        const PassMark prep = decodePassNo(-(40 + k));
+        QCOMPARE(prep.phase, SeamPhase::Prepare);
+        QCOMPARE(prep.seam, k);
+        QCOMPARE(prep.craft, Craft::Rough);
+
+        const PassMark lift = decodePassNo(-(50 + k));
+        QCOMPARE(lift.phase, SeamPhase::Lift);
+        QCOMPARE(lift.seam, k);
+        QCOMPARE(lift.craft, Craft::Rough);
+
+        // 细磨同一套规则，整体 +100
+        const PassMark prepFine = decodePassNo(-(140 + k));
+        QCOMPARE(prepFine.phase, SeamPhase::Prepare);
+        QCOMPARE(prepFine.seam, k);
+        QCOMPARE(prepFine.craft, Craft::Fine);
+
+        const PassMark liftFine = decodePassNo(-(150 + k));
+        QCOMPARE(liftFine.phase, SeamPhase::Lift);
+        QCOMPARE(liftFine.seam, k);
+        QCOMPARE(liftFine.craft, Craft::Fine);
+    }
+
+    // 区间之间（-39/-40/-49/-50/-59 等）必须落回"未标记"，不能误判成任何动作
+    const QVector<int> undef{-39, -40, -49, -50, -59, -139, -140, -149, -150, -159};
+    for (int v : undef) {
+        QCOMPARE(decodePassNo(v).phase, SeamPhase::None);
+    }
+
+    // 界面上要能直接读出来的动作名
+    QCOMPARE(seamPhaseLabel(SeamPhase::Prepare), QStringLiteral("预备位"));
+    QCOMPARE(seamPhaseLabel(SeamPhase::Lift), QStringLiteral("抬起"));
+    QCOMPARE(seamPhaseLabel(SeamPhase::Transfer), QStringLiteral("空走"));
+}
+
+// 改完 KRL 之后，打磨阶段的 PassNo 序列长这样（焊缝 1 → 焊缝 2）：
+//   -21 空走到焊缝1 / -41 预备位 / 1,2 两道 / -11 道间 / 12 补充道 / -51 抬起 /
+//   -22 空走到焊缝2 / -42 预备位 / 1 / -52 抬起
+// 必须切成 12 段、段段都归属到具体焊缝（seam 不能为 0），
+// 否则"点选某一条焊缝"就会串台或漏显示。
+void StationTest::grindingCycleSplitsBySeam() {
+    const QVector<int> pn{-21, -21, -41, -41, 1, 1, -11, 2, 2, -11, 12, 12,
+                          -51, -51, -22, -22, -42, 1, -52};
+    const DataGroup g = makeGroup(pn, QVector<int>(pn.size(), 1000));
+
+    QStringList ids;
+    for (const Segment& s : g.seam.segments) {
+        ids << QStringLiteral("%1/%2").arg(int(s.kind)).arg(s.seam);
+        QVERIFY2(s.seam >= 1, "打磨阶段的每一段都必须归属到某条焊缝");
+    }
+    QCOMPARE(ids.join(QLatin1Char('|')),
+             QStringLiteral("4/1|6/1|2/1|3/1|2/1|3/1|2/1|7/1|4/2|6/2|2/2|7/2"));
+
+    // 道次挂在正确的焊缝上，补充打磨仍按"编号跳增"识别
+    QCOMPARE(g.passes.size(), 4);
+    QCOMPARE(g.passes[0].seam, 1);
+    QCOMPARE(g.passes[1].seam, 1);
+    QCOMPARE(g.passes[2].seam, 1);
+    QCOMPARE(g.passes[3].seam, 2);
+    QVERIFY(g.passes[2].retry);
+    QVERIFY(!g.passes[3].retry);
+
+    const SeamStat* s1 = g.seam.find(1);
+    const SeamStat* s2 = g.seam.find(2);
+    QVERIFY(s1);
+    QVERIFY(s2);
+    QCOMPARE(s1->normalN, 2);
+    QCOMPARE(s1->retryN, 1);
+    QCOMPARE(s2->normalN, 1);
+    QCOMPARE(s2->retryN, 0);
+}

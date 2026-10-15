@@ -360,13 +360,13 @@ XY ChartView::visibleXY(DecCache& cache, const QString& key,
 
 // ── 拆分视图：按焊缝 / 阶段 / 工序过滤 ──────────────────────────
 
-void ChartView::setSeamFilter(const QSet<int>& seams) {
-    if (m_seamSel == seams) {
+void ChartView::setSeamFocus(const QSet<int>& seams) {
+    if (m_seamFocus == seams) {
         return;
     }
-    m_seamSel = seams;
+    m_seamFocus = seams;
     clearHover();
-    relimAll();
+    // 只改绘制浓淡、不隐藏任何数据：坐标范围不重算，视图不会跳
     update();
 }
 
@@ -391,7 +391,11 @@ void ChartView::setCraftView(CraftView v) {
 }
 
 bool ChartView::filterActive() const {
-    return !m_seamSel.isEmpty() || m_phaseView != PhaseView::All || m_craftView != CraftView::All;
+    return m_phaseView != PhaseView::All || m_craftView != CraftView::All;
+}
+
+bool ChartView::focusActive() const {
+    return !m_seamFocus.isEmpty();
 }
 
 bool ChartView::segmentVisible(const Segment& s) const {
@@ -402,11 +406,6 @@ bool ChartView::segmentVisible(const Segment& s) const {
     if (m_craftView == CraftView::FineOnly && s.craft == Craft::Rough) {
         return false;
     }
-    if (!m_seamSel.isEmpty()) {
-        if (s.seam <= 0 || !m_seamSel.contains(s.seam)) {
-            return false;   // 选中了具体焊缝时，未归属段不画
-        }
-    }
     switch (m_phaseView) {
     case PhaseView::DetectOnly: return s.kind == SeamPhase::Detect;
     case PhaseView::GrindOnly:  return s.kind == SeamPhase::Grind;
@@ -414,6 +413,40 @@ bool ChartView::segmentVisible(const Segment& s) const {
     case PhaseView::All:        break;
     }
     return true;
+}
+
+// 是否属于"被突出显示"的焊缝
+bool ChartView::segmentFocused(const Segment& s) const {
+    return !m_seamFocus.isEmpty() && s.seam > 0 && m_seamFocus.contains(s.seam);
+}
+
+// 该焊缝在当前视图下是否还有可见的段（决定装饰层——底色带/分界线/焊缝标注——要不要画）
+bool ChartView::seamVisibleInView(const DataGroup& g, int seam) const {
+    if (seam <= 0) {
+        return false;
+    }
+    if (!filterActive()) {
+        return true;
+    }
+    for (const Segment& s : g.seam.segments) {
+        if (s.seam == seam && segmentVisible(s)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 该道次在当前视图下是否还看得见（阶段/工序过滤会隐藏一部分段）
+bool ChartView::passVisibleInView(const DataGroup& g, const Pass& p) const {
+    if (!filterActive()) {
+        return true;
+    }
+    for (const Segment& s : g.seam.segments) {
+        if (s.kind == SeamPhase::Grind && s.passNo == p.no && s.seam == p.seam) {
+            return segmentVisible(s);
+        }
+    }
+    return true;    // 没有段表（旧 CSV）时不隐藏
 }
 
 // 过滤视图：逐段取点、逐段成线。
@@ -447,9 +480,19 @@ void ChartView::drawSegmented(QPainter& p, DataGroup* g) {
         switch (s.kind) {
         case SeamPhase::Detect:   alpha = 1.0;  break;
         case SeamPhase::Grind:    alpha = 0.95; break;
+        case SeamPhase::Prepare:  alpha = 0.55; break;   // 到预备位
+        case SeamPhase::Lift:     alpha = 0.40; break;   // 打磨后抬起
         case SeamPhase::GrindGap: alpha = 0.30; break;   // 返回/接近段：淡
         default:                  alpha = 0.18; break;   // 转移、未标记：更淡
         }
+        // 被突出的段：全亮加粗；其余保持"浅色底色层"的浓淡（不隐藏、也不额外变暗）
+        const bool focused = segmentFocused(s);
+        if (focusActive()) {
+            alpha = focused ? CURVE_FOCUS_ALPHA : CURVE_BASE_ALPHA;
+        }
+        const double wPos = focused ? 2.6 : 1.6;
+        const double wForce = focused ? 2.3 : 1.4;
+        const double esAlpha = focused ? 0.9 : CURVE_ES_ALPHA;
 
         XY xy;
         const int cnt = i1 - i0 + 1;
@@ -471,7 +514,7 @@ void ChartView::drawSegmented(QPainter& p, DataGroup* g) {
             }
         }
         if (g->showPos && xy.t.size() >= 1) {
-            drawLine(p, xy, pal.pos, Qt::SolidLine, 1.6, false, alpha);
+            drawLine(p, xy, pal.pos, Qt::SolidLine, wPos, false, alpha);
         }
         if (g->showForce) {
             XY xf;
@@ -492,7 +535,7 @@ void ChartView::drawSegmented(QPainter& p, DataGroup* g) {
                     xf.y.append(double(g->force[i]));
                 }
             }
-            drawLine(p, xf, pal.force, Qt::DashLine, 1.4, true, alpha);
+            drawLine(p, xf, pal.force, Qt::DashLine, wForce, true, alpha);
         }
         if (m_showEsPos && g->hasEs) {
             XY xe;
@@ -502,7 +545,7 @@ void ChartView::drawSegmented(QPainter& p, DataGroup* g) {
                 xe.t.append(g->times[i]);
                 xe.y.append(double(g->esPos[i]));
             }
-            drawStair(p, xe, pal.pos, 1.0, 0.35);
+            drawStair(p, xe, pal.pos, focused ? 1.6 : 1.0, esAlpha);
         }
 
         // 检测段只有几个采样点，光靠折线看不出内容：额外打一个标记点，
@@ -514,6 +557,59 @@ void ChartView::drawSegmented(QPainter& p, DataGroup* g) {
             p.setBrush(pal.pos);
             p.drawEllipse(QPointF(x, y), 3.5, 3.5);
             p.setBrush(Qt::NoBrush);
+        }
+    }
+}
+
+// 正常视图（没有阶段/工序过滤）下的"突出显示"：把被选中焊缝的那几段用更粗更亮的线
+// 叠画一遍。其余曲线保持原样不隐藏 —— 用户要的是"突出这一段"，不是"只剩这一段"。
+void ChartView::drawFocusSegments(QPainter& p, DataGroup* g) {
+    if (!focusActive() || !g) {
+        return;
+    }
+    const int n = g->times.size();
+    if (n == 0) {
+        return;
+    }
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
+    for (const Segment& s : g->seam.segments) {
+        if (!segmentFocused(s)) {
+            continue;
+        }
+        const int i0 = qMax(0, s.i0);
+        const int i1 = qMin(n - 1, s.i1);
+        if (i1 < i0) {
+            continue;
+        }
+        if (g->times[i1] < m_x0 || g->times[i0] > m_x1) {
+            continue;                       // 整段都在窗口外
+        }
+        QVector<double> tt, yp, yf;
+        tt.reserve(i1 - i0 + 1);
+        yp.reserve(i1 - i0 + 1);
+        yf.reserve(i1 - i0 + 1);
+        for (int i = i0; i <= i1; ++i) {
+            tt.append(g->times[i]);
+            yp.append(double(g->pos[i]));
+            yf.append(double(g->force[i]));
+        }
+        // 段太长才抽稀（短段直接画原始点，放大后是真实波形）
+        const bool thick = (i1 - i0 + 1) > DISPLAY_MAX_PTS;
+        const XY xp = thick ? decimate(tt, yp) : XY{tt, yp};
+        const XY xf = thick ? decimate(tt, yf) : XY{tt, yf};
+        if (g->showPos) {
+            drawLine(p, xp, pal.pos, Qt::SolidLine, 2.6, false, 1.0);
+        }
+        if (g->showForce) {
+            drawLine(p, xf, pal.force, Qt::DashLine, 2.3, true, 1.0);
+        }
+        if (m_showEsPos && g->hasEs) {
+            QVector<double> ye;
+            ye.reserve(i1 - i0 + 1);
+            for (int i = i0; i <= i1; ++i) {
+                ye.append(double(g->esPos[i]));
+            }
+            drawStair(p, thick ? decimate(tt, ye) : XY{tt, ye}, pal.pos, 1.6, 0.9);
         }
     }
 }
@@ -540,39 +636,6 @@ void ChartView::drawGrid(QPainter& p) {
     }
 }
 
-void ChartView::drawPassBands(QPainter& p) {
-    if (!m_showSegments || m_overlayMode) return;
-    DataGroup* g = refGroup();
-    if (!g) return;
-    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
-    QRect plot = plotRect();
-    QColor c = pal.accent;
-    p.setPen(Qt::NoPen);
-
-    // 有焊缝（工位）标记：按焊缝铺底色带，4 个工位一眼可分
-    if (!g->seam.seams.isEmpty()) {
-        int i = 0;
-        for (const SeamStat& s : g->seam.seams) {
-            QColor band = c;
-            band.setAlphaF((i++ % 2) ? 0.085 : 0.035);
-            p.setBrush(band);
-            p.drawRect(QRectF(QPointF(xToPx(s.t0), plot.top()),
-                              QPointF(xToPx(s.t1), plot.bottom())));
-        }
-        return;
-    }
-
-    if (g->passes.isEmpty()) return;
-    c.setAlphaF(0.055);
-    p.setBrush(c);
-    for (int k = 0; k < g->passes.size(); k += 2) {
-        const Pass& pass = g->passes[k];
-        double x0 = xToPx(pass.t0);
-        double x1 = xToPx(pass.t1);
-        p.drawRect(QRectF(QPointF(x0, plot.top()), QPointF(x1, plot.bottom())));
-    }
-}
-
 void ChartView::drawPassDividers(QPainter& p) {
     if (!m_showSegments || m_overlayMode) return;
     QRect plot = plotRect();
@@ -588,6 +651,9 @@ void ChartView::drawPassDividers(QPainter& p) {
         spen.setCosmetic(true);
         p.setPen(spen);
         for (const SeamStat& s : rg->seam.seams) {
+            if (!seamVisibleInView(*rg, s.seam)) {
+                continue;       // 过滤后看不见的焊缝不画分界线
+            }
             const double x = xToPx(s.t0);
             p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
         }
@@ -599,6 +665,9 @@ void ChartView::drawPassDividers(QPainter& p) {
         tc.setAlphaF(0.95);
         p.setPen(tc);
         for (const SeamStat& s : rg->seam.seams) {
+            if (!seamVisibleInView(*rg, s.seam)) {
+                continue;
+            }
             const double x = xToPx(s.t0);
             p.drawText(QPointF(x + 4, plot.top() + sfm.ascent() + 2),
                        QStringLiteral("焊缝 %1").arg(s.seam));
@@ -616,6 +685,9 @@ void ChartView::drawPassDividers(QPainter& p) {
         pen.setStyle(Qt::DashLine);
         p.setPen(pen);
         for (const Pass& pass : g->passes) {
+            if (!passVisibleInView(*g, pass)) {
+                continue;
+            }
             double x = xToPx(pass.t0);
             p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
             x = xToPx(pass.t1);
@@ -645,6 +717,9 @@ void ChartView::drawPassAnnotations(QPainter& p) {
     for (int k = 0; k < n; ++k) {
         if (k % step) continue;
         const Pass& pass = g->passes[k];
+        if (!passVisibleInView(*g, pass)) {
+            continue;       // 过滤后看不见的道次不标注，避免"#n 标在别的段上"
+        }
         double x = xToPx((pass.t0 + pass.t1) / 2.0);
         QString txt = QStringLiteral("#%1").arg(pass.no);
         if (pass.retry) {
@@ -790,10 +865,6 @@ void ChartView::drawLegend(QPainter& p) {
         }
     } else {
         for (DataGroup* g : *m_groups) {
-            if (filterActive()) {
-                drawSegmented(p, g);   // 拆分视图：逐段绘制，段间不连线
-                continue;
-            }
             const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             if (g->showPos) {
                 Entry e; e.color = pal.pos; e.style = Qt::SolidLine; e.customDash = false;
@@ -937,42 +1008,67 @@ void ChartView::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing, true);
     p.fillRect(rect(), theme::BG);
     QRect plot = plotRect();
-    p.fillRect(plot, theme::BG);
+    // 曲线背后的底色：整块绘图区同一个深度，不按焊缝/道次叠加深浅
+    p.fillRect(plot, theme::PLOT_BG);
 
-    drawPassBands(p);
+    // 底色带 / 网格 / 分界线 / 曲线一律裁剪到绘图区内。
+    // 否则平移或过滤之后，落在区外的矩形/直线会糊到坐标轴甚至整个窗口上（"画出界"）。
+    p.save();
+    p.setClipRect(plot);
     drawGrid(p);
     drawPassDividers(p);
 
     if (m_overlayMode) {
         drawOverlay(p);
+    } else if (filterActive()) {
+        // 阶段/工序过滤：只画匹配的段（逐段绘制、段间不连线）。
+        // 注意这里必须**不再画未过滤的全曲线**，否则过滤就成了"叠加"，隐藏不掉任何东西。
+        for (DataGroup* g : *m_groups) {
+            drawSegmented(p, g);
+        }
     } else {
+        // 底色层一律浅色：没选中任何焊缝时整张图就是浅色的；
+        // 选中某条焊缝后，它由 drawFocusSegments 叠一遍更粗更亮的线，其余保持浅色不变。
+        const double base = CURVE_BASE_ALPHA;
+        const double monA = CURVE_BASE_ALPHA;
         if (m_showMonitor && m_recorder) {
             drawLine(p, visibleXY(m_recorder->monDec, QStringLiteral("pos"),
                                   m_recorder->monTimes, m_recorder->monPos),
-                     theme::C_MONITOR, Qt::SolidLine, 1.0, false, 0.6);
+                     theme::C_MONITOR, Qt::SolidLine, 1.0, false, monA);
             drawLine(p, visibleXY(m_recorder->monDec, QStringLiteral("force"),
                                   m_recorder->monTimes, m_recorder->monForce),
-                     theme::C_MONITOR, Qt::DashLine, 1.0, true, 0.6);
+                     theme::C_MONITOR, Qt::DashLine, 1.0, true, monA);
         }
         for (DataGroup* g : *m_groups) {
             const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             if (g->showPos) {
                 drawLine(p, visibleXY(g->decCache, QStringLiteral("pos"), g->times, g->pos),
-                         pal.pos, Qt::SolidLine, 1.6, false, 0.9);
+                         pal.pos, Qt::SolidLine, 1.6, false, base);
             }
             if (g->showForce) {
                 drawLine(p, visibleXY(g->decCache, QStringLiteral("force"), g->times, g->force),
-                         pal.force, Qt::DashLine, 1.6, true, 0.9);
+                         pal.force, Qt::DashLine, 1.6, true, base);
             }
             if (m_showEsPos && g->hasEs) {
                 drawStair(p, visibleXY(g->decCache, QStringLiteral("es"), g->times, g->esPos),
-                          pal.pos, 1.0, 0.45);
+                          pal.pos, 1.0, CURVE_ES_ALPHA);
             }
         }
+        for (DataGroup* g : *m_groups) {
+            drawFocusSegments(p, g);        // 把被选中的那几条焊缝叠画出来
+        }
     }
+    p.restore();
 
     drawAxes(p);
+
+    // 道次标注画在绘图区上方，需要一个"含上方留白"的裁剪区，
+    // 否则平移后落在很左边的标注会横穿整个窗口
+    p.save();
+    p.setClipRect(QRect(plot.left(), 0, plot.width(), plot.bottom() + 1));
     drawPassAnnotations(p);
+    p.restore();
+
     drawLegend(p);
     if (m_hoverValid) drawHover(p);
 }
