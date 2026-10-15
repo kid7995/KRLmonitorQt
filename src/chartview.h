@@ -2,10 +2,18 @@
 
 #include <QWidget>
 #include <QVector>
+#include <QSet>
 #include <QStringList>
 
 #include "model.h"
 #include "recorder.h"
+
+// 拆分视图的过滤条件（需求 2 / 4）：
+//   阶段：全部 / 仅检测 / 仅打磨道次 / 仅打磨间隙
+//   工序：全部 / 仅粗磨 / 仅细磨
+//   焊缝：选中的焊缝集合（空 = 全部）
+enum class PhaseView { All, DetectOnly, GrindOnly, GapOnly };
+enum class CraftView { All, RoughOnly, FineOnly };
 
 // 图表视图：双 Y 轴 + 网格 + 道次分割 + 叠道对比 + 灰色预览 + 图例 +
 // 悬停读值 + 滚轮缩放 / 拖拽平移 / 双击重置。用 QPainter 自绘，
@@ -22,6 +30,12 @@ public:
     void setRefGroupIdx(int idx) { m_refGroupIdx = idx; update(); }
     void setXLabel(const QString& s) { m_xlabel = s; update(); }
     void setZoomMode(const QString& mode) { m_zoomMode = mode; }
+
+    // ── 拆分视图（按焊缝 / 按阶段 / 按工序过滤）──
+    void setSeamFilter(const QSet<int>& seams);   // 空集合 = 不过滤（显示全部焊缝）
+    void setPhaseView(PhaseView v);
+    void setCraftView(CraftView v);
+    bool filterActive() const;
 
     void setHoverActive(bool v) { m_hoverActive = v; if (!v) clearHover(); }
     bool hoverActive() const { return m_hoverActive; }
@@ -75,6 +89,9 @@ private:
                   Qt::PenStyle style, double lw, bool y2, double alpha);
     void drawStair(QPainter& p, const XY& xy, const QColor& color,
                    double lw, double alpha);
+    // 过滤视图下按"段"分别绘制：段与段之间不连线，且按段类型区分明暗
+    bool segmentVisible(const Segment& s) const;
+    void drawSegmented(QPainter& p, DataGroup* g);
     // 可见窗口 [m_x0, m_x1] 内的曲线数据：窗口点数 ≤ DISPLAY_MAX_PTS 时
     // 直接用原始点切片（放大后还原真实波形），否则走全范围抽稀缓存路径
     XY visibleXY(DecCache& cache, const QString& key,
@@ -93,6 +110,9 @@ private:
 
     bool m_showMonitor = true;
     bool m_showEsPos = true;
+    QSet<int> m_seamSel;                         // 选中的焊缝（空 = 全部）
+    PhaseView m_phaseView = PhaseView::All;
+    CraftView m_craftView = CraftView::All;
     bool m_overlayMode = false;
     bool m_showSegments = true;
     int m_refGroupIdx = -1;

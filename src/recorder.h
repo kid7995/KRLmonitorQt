@@ -21,6 +21,7 @@ struct TickResult {
     int lastPass = 0;
     int lastSeam = 0;            // 当前焊缝号（0 = 未知 / 旧协议）
     SeamPhase lastPhase = SeamPhase::None;
+    Craft lastCraft = Craft::Unknown;   // 当前工序（粗磨 / 细磨）
     bool structDirty = false;    // 建组/封存，需刷新面板
     bool monDirty = false;       // 灰色预览有新数据
     bool passDirty = false;      // 道次区间有变化，需重画分割线
@@ -50,12 +51,18 @@ public:
     void markPrevUnknown();  // 仅把 prevRecordOn 置未知（暂停后恢复用）
     bool noteGroupRemoved(int idx);  // 组被删除后修正记录索引
 
+    // 强制封存当前周期（断线 / 停止 / 退出时用）。
+    // 与正常下降沿封组的区别：会给该组打上 incomplete 标记，并且把 prevRecordOn 置 FALSE，
+    // 保证重连后第一个上升沿一定新建组（否则两件数据会被并成一组）。
+    bool forceSeal(TickResult& r);
+
     // 当前正在写入的组索引（-1 = 无）
     int recGroupIdx = -1;
 
     // 灰色预览（未记录）时段的当前阶段 / 焊缝号，供状态栏显示
     int monSeam = 0;
     SeamPhase monPhase = SeamPhase::None;
+    Craft monCraft = Craft::Unknown;   // 灰色预览时段的当前工序
 
     // 常驻灰色预览缓冲（ChartView 直接读取）
     QVector<double> monTimes;
@@ -68,7 +75,7 @@ public:
 private:
     void onRisingEdge(double ts, TickResult& r);
     void onFallingEdge(TickResult& r);
-    void append(double ts, int pos, int force, int pn, int es, TickResult& r);
+    void append(const Sample& s, TickResult& r);
     void updatePasses(DataGroup* g, double rt, int pn, TickResult& r);
     void trimIfNeeded(DataGroup* g, TickResult& r);
     void appendMonitor(double ts, int pos, int force, TickResult& r);

@@ -37,6 +37,35 @@ bool parsePacket(const QString& xml, Sample& out) {
             bool ok = false;
             double d = r.readElementText().trimmed().toDouble(&ok);
             out.esPos = ok ? (int)d : 0;
+        } else if (name == QLatin1String("WeldH")) {
+            // KRL 侧按 INT(µm) 发送；这里按 double 解析，若将来改成 REAL(mm) 也不会解析失败
+            bool ok = false;
+            double d = r.readElementText().trimmed().toDouble(&ok);
+            if (ok) {
+                out.weldHum = (int)d;
+                out.hasDetect = true;
+            }
+        } else if (name == QLatin1String("BaseH")) {
+            bool ok = false;
+            double d = r.readElementText().trimmed().toDouble(&ok);
+            if (ok) {
+                out.baseH = (int)d;
+                out.hasDetect = true;
+            }
+        } else if (name == QLatin1String("Misalign")) {
+            bool ok = false;
+            double d = r.readElementText().trimmed().toDouble(&ok);
+            if (ok) {
+                out.misalignUm = (int)d;
+                out.hasDetect = true;
+            }
+        } else if (name == QLatin1String("Rounds")) {
+            bool ok = false;
+            double d = r.readElementText().trimmed().toDouble(&ok);
+            if (ok) {
+                out.rounds = (int)d;
+                out.hasDetect = true;
+            }
         }
     }
 

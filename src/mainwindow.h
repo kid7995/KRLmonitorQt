@@ -3,10 +3,14 @@
 #include <QMainWindow>
 #include <QHash>
 #include <QVector>
+#include <QSet>
 #include <QColor>
 
 #include "model.h"
 #include "recorder.h"
+#include "part.h"
+#include "chartview.h"
+#include "ecmfile.h"
 
 class QLabel;
 class QPushButton;
@@ -25,14 +29,17 @@ struct CardWidgets {
     QLabel* ptsLabel = nullptr;
 };
 
-// 单个焊缝（工位）卡片上的控件
-struct SeamCardWidgets {
-    QFrame* card = nullptr;
-    QLabel* title = nullptr;
-    QLabel* state = nullptr;
-    QLabel* pass = nullptr;
-    QLabel* count = nullptr;
-    QLabel* values = nullptr;
+// 归档与连续生产设置（持久化到 QSettings）
+struct ArchiveSettings {
+    QString dir;                                      // 存档根目录
+    QString nameTmpl;                                 // 文件名模板
+    bool autoSave = AUTO_SAVE_DEFAULT;                // 每个周期封组后自动落盘
+    bool compress = ARCHIVE_COMPRESS_DEFAULT;
+    bool obfuscate = ARCHIVE_OBFUSCATE_DEFAULT;
+    int keepGroups = KEEP_GROUPS_DEFAULT;             // 内存里保留多少组
+    PartRule rule = PartRule::PerCycle;               // 分件规则
+    int timeoutMin = PART_TIMEOUT_MIN_DEFAULT;        // 超时切分（分钟）
+    bool autoArm = true;                              // 打开即开始监听
 };
 
 // 主窗口：把各层组装起来并做事件编排（对应 Python ecm_monitor/app.py 的 App）。
@@ -49,6 +56,11 @@ private slots:
     void onSave();
     void onLoad();
     void onClear();
+    void onNewPart();
+    void onSettings();
+    void onServerDisconnected();
+    void togglePhaseView();
+    void toggleCraftView();
     void toggleSegments();
     void toggleOverlay();
     void toggleEsPos();
@@ -65,10 +77,28 @@ private:
     void buildValueBar();
     void buildChart();
     void refreshGroupsPanel();
-    void refreshSeamPanel();          // 重建焊缝卡片集合（焊缝号变化时）
-    void updateSeamCards();           // 只刷新焊缝卡片文字（每帧）
+    void refreshSeamPanel();          // 刷新焊缝栏（chip 状态 + 检测结果行）
     QString seamSummary(const DataGroup& g) const;
     int seamPanelGroupIdx() const;    // 当前应显示哪一组的焊缝
+    void setSeamSelected(int seam, bool on);   // 焊缝 chip 点击
+    void refreshSeamChips();                   // 只刷新 chip 的选中/高亮状态
+    void applyViewFilters();                   // 把当前过滤条件推给图表
+    void refreshSeamDetail();                  // 刷新"检测结果"那行文字
+    void refreshLinkLabel();                   // 刷新"端口/KUKA 连接"指示灯
+    void refreshLocalIps();
+    void writeStartupLog();                    // 启动日志（监听结果写文件，便于现场排查）
+
+    // ── 件 / 自动存档 ────────────────────────────────────────────
+    void loadSettings();
+    void saveSettings();
+    QString todayArchiveDir() const;
+    QString archiveNameFor(const DataGroup& g) const;
+    bool autoArchiveGroup(DataGroup* g);        // 封组后自动落盘
+    void enforceMemoryPolicy();                 // 内存回收（只回收已落盘的组）
+    QString groupDisplayName(const DataGroup& g) const;   // "件0007 · 粗磨 · S1-4"
+    bool saveGroupToFile(DataGroup* g, const QString& path, QString& err);
+    bool loadGroupFromFile(const QString& path, DataGroup& g, EcmFileMeta& meta, QString& err);
+    void seedPartSeqFromArchive();              // 跨重启续件号
 
     // 组管理
     int addGroup(const QString& name, const QVector<double>& times,
@@ -113,6 +143,10 @@ private:
     QPushButton* m_btnEsPos = nullptr;
     QPushButton* m_btnAutoPause = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLabel* m_linkLabel = nullptr;     // 常驻：端口监听 / KUKA 连接 / 本机 IP
+    QString m_localIps;
+    bool m_listenOk = false;
+    int m_tickCount = 0;
     QLabel* m_lockLabel = nullptr;
     QButtonGroup* m_zoomGroup = nullptr;
 
@@ -128,9 +162,18 @@ private:
     QWidget* m_seamWidget = nullptr;
     QHBoxLayout* m_seamLayout = nullptr;
     QLabel* m_seamContext = nullptr;   // 数值栏：焊缝 k/8 · 阶段 · 第 n 遍
-    QHash<int, SeamCardWidgets> m_seamCards;
-    int m_seamCardsGroup = -2;         // 卡片当前对应的组（-2 = 未构建）
-    QString m_seamCardsSig;            // 焊缝号序列签名
+    QLabel* m_detectLabel = nullptr;   // 焊缝栏右侧：检测结果（高度/基材/错边/轮次）
+    QHash<int, QPushButton*> m_seamChips;   // 焊缝号 -> chip
+    QSet<int> m_seamSel;               // 选中的焊缝（空 = 全部）
+    int m_detailSeam = 0;              // 右侧详情显示哪条焊缝（0 = 跟随当前）
+    PhaseView m_phaseView = PhaseView::All;
+    CraftView m_craftView = CraftView::All;
+    QPushButton* m_btnPhase = nullptr;
+    QPushButton* m_btnCraft = nullptr;
+
+    // 件与存档
+    PartSplitter m_parts;
+    ArchiveSettings m_arch;
 
     QLabel* m_groupsHint = nullptr;
     QWidget* m_cardsWidget = nullptr;

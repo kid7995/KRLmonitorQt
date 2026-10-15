@@ -211,6 +211,45 @@ void ChartView::computeBounds(double& x0, double& x1, double& y10, double& y11,
                           m_recorder->monTimes, m_recorder->monForce), true, false, true);
         }
         for (DataGroup* g : *m_groups) {
+            if (filterActive()) {
+                // 过滤视图：范围只按"看得见的段"算，否则缩放到选中的焊缝就失去意义
+                const int n = g->times.size();
+                for (const Segment& s : g->seam.segments) {
+                    if (!segmentVisible(s)) {
+                        continue;
+                    }
+                    const int a = qMax(0, s.i0);
+                    const int b = qMin(n - 1, s.i1);
+                    if (b < a) {
+                        continue;
+                    }
+                    for (int i = a; i <= b; ++i) {
+                        const double tv = g->times[i];
+                        if (tv < x0) x0 = tv;
+                        if (tv > x1) x1 = tv;
+                        hasX = true;
+                        if (g->showPos) {
+                            const double yv = double(g->pos[i]);
+                            if (yv < y10) y10 = yv;
+                            if (yv > y11) y11 = yv;
+                            hasY1 = true;
+                        }
+                        if (m_showEsPos && g->hasEs) {
+                            const double yv = double(g->esPos[i]);
+                            if (yv < y10) y10 = yv;
+                            if (yv > y11) y11 = yv;
+                            hasY1 = true;
+                        }
+                        if (g->showForce) {
+                            const double fv = double(g->force[i]);
+                            if (fv < y20) y20 = fv;
+                            if (fv > y21) y21 = fv;
+                            hasY2 = true;
+                        }
+                    }
+                }
+                continue;
+            }
             if (g->showPos) {
                 feed(cachedXY(g->decCache, QStringLiteral("pos"), g->times, g->pos), true, true, false);
             }
@@ -319,6 +358,166 @@ XY ChartView::visibleXY(DecCache& cache, const QString& key,
     return cachedXY(cache, key, t, y);
 }
 
+// ── 拆分视图：按焊缝 / 阶段 / 工序过滤 ──────────────────────────
+
+void ChartView::setSeamFilter(const QSet<int>& seams) {
+    if (m_seamSel == seams) {
+        return;
+    }
+    m_seamSel = seams;
+    clearHover();
+    relimAll();
+    update();
+}
+
+void ChartView::setPhaseView(PhaseView v) {
+    if (m_phaseView == v) {
+        return;
+    }
+    m_phaseView = v;
+    clearHover();
+    relimAll();
+    update();
+}
+
+void ChartView::setCraftView(CraftView v) {
+    if (m_craftView == v) {
+        return;
+    }
+    m_craftView = v;
+    clearHover();
+    relimAll();
+    update();
+}
+
+bool ChartView::filterActive() const {
+    return !m_seamSel.isEmpty() || m_phaseView != PhaseView::All || m_craftView != CraftView::All;
+}
+
+bool ChartView::segmentVisible(const Segment& s) const {
+    // 工序：只排除"明确是另一工序"的段，未定工序（旧程序）保留，避免误隐藏
+    if (m_craftView == CraftView::RoughOnly && s.craft == Craft::Fine) {
+        return false;
+    }
+    if (m_craftView == CraftView::FineOnly && s.craft == Craft::Rough) {
+        return false;
+    }
+    if (!m_seamSel.isEmpty()) {
+        if (s.seam <= 0 || !m_seamSel.contains(s.seam)) {
+            return false;   // 选中了具体焊缝时，未归属段不画
+        }
+    }
+    switch (m_phaseView) {
+    case PhaseView::DetectOnly: return s.kind == SeamPhase::Detect;
+    case PhaseView::GrindOnly:  return s.kind == SeamPhase::Grind;
+    case PhaseView::GapOnly:    return s.kind == SeamPhase::GrindGap;
+    case PhaseView::All:        break;
+    }
+    return true;
+}
+
+// 过滤视图：逐段取点、逐段成线。
+// 之所以不能把过滤后的点并成一条折线，是因为段与段之间隔着空移，
+// 连起来会画出跨越焊缝的斜线；逐段绘制同时也让"段类型"可以直接用明暗表达。
+void ChartView::drawSegmented(QPainter& p, DataGroup* g) {
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
+    const int n = g->times.size();
+    if (n == 0) {
+        return;
+    }
+
+    for (const Segment& s : g->seam.segments) {
+        if (!segmentVisible(s)) {
+            continue;
+        }
+        const int i0 = qMax(0, s.i0);
+        const int i1 = qMin(n - 1, s.i1);
+        if (i1 < i0) {
+            continue;
+        }
+
+        // 段只画落在当前窗口内的部分
+        const double t0 = g->times[i0];
+        const double t1 = g->times[i1];
+        if (t1 < m_x0 || t0 > m_x1) {
+            continue;
+        }
+
+        double alpha = 0.9;
+        switch (s.kind) {
+        case SeamPhase::Detect:   alpha = 1.0;  break;
+        case SeamPhase::Grind:    alpha = 0.95; break;
+        case SeamPhase::GrindGap: alpha = 0.30; break;   // 返回/接近段：淡
+        default:                  alpha = 0.18; break;   // 转移、未标记：更淡
+        }
+
+        XY xy;
+        const int cnt = i1 - i0 + 1;
+        if (cnt > DISPLAY_MAX_PTS) {
+            QVector<double> tt, yy;
+            tt.reserve(cnt);
+            yy.reserve(cnt);
+            for (int i = i0; i <= i1; ++i) {
+                tt.append(g->times[i]);
+                yy.append(double(g->pos[i]));
+            }
+            xy = decimate(tt, yy);
+        } else {
+            xy.t.reserve(cnt);
+            xy.y.reserve(cnt);
+            for (int i = i0; i <= i1; ++i) {
+                xy.t.append(g->times[i]);
+                xy.y.append(double(g->pos[i]));
+            }
+        }
+        if (g->showPos && xy.t.size() >= 1) {
+            drawLine(p, xy, pal.pos, Qt::SolidLine, 1.6, false, alpha);
+        }
+        if (g->showForce) {
+            XY xf;
+            if (cnt > DISPLAY_MAX_PTS) {
+                QVector<double> tt, yy;
+                tt.reserve(cnt);
+                yy.reserve(cnt);
+                for (int i = i0; i <= i1; ++i) {
+                    tt.append(g->times[i]);
+                    yy.append(double(g->force[i]));
+                }
+                xf = decimate(tt, yy);
+            } else {
+                xf.t.reserve(cnt);
+                xf.y.reserve(cnt);
+                for (int i = i0; i <= i1; ++i) {
+                    xf.t.append(g->times[i]);
+                    xf.y.append(double(g->force[i]));
+                }
+            }
+            drawLine(p, xf, pal.force, Qt::DashLine, 1.4, true, alpha);
+        }
+        if (m_showEsPos && g->hasEs) {
+            XY xe;
+            xe.t.reserve(cnt);
+            xe.y.reserve(cnt);
+            for (int i = i0; i <= i1; ++i) {
+                xe.t.append(g->times[i]);
+                xe.y.append(double(g->esPos[i]));
+            }
+            drawStair(p, xe, pal.pos, 1.0, 0.35);
+        }
+
+        // 检测段只有几个采样点，光靠折线看不出内容：额外打一个标记点，
+        // 位置 = 该段末尾的 ESpos（就是这一条焊缝的基准高度 InitLen）
+        if (s.kind == SeamPhase::Detect) {
+            const double x = xToPx(g->times[i1]);
+            const double y = y1ToPx(double(g->esPos[i1]));
+            p.setPen(QPen(pal.pos, 1.2));
+            p.setBrush(pal.pos);
+            p.drawEllipse(QPointF(x, y), 3.5, 3.5);
+            p.setBrush(Qt::NoBrush);
+        }
+    }
+}
+
 void ChartView::drawGrid(QPainter& p) {
     QRect plot = plotRect();
     QColor c = theme::BORDER;
@@ -345,7 +544,7 @@ void ChartView::drawPassBands(QPainter& p) {
     if (!m_showSegments || m_overlayMode) return;
     DataGroup* g = refGroup();
     if (!g) return;
-    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
     QRect plot = plotRect();
     QColor c = pal.accent;
     p.setPen(Qt::NoPen);
@@ -381,7 +580,7 @@ void ChartView::drawPassDividers(QPainter& p) {
     // 焊缝（工位）分界：实线 + 焊缝号，用于区分 1..8 号焊缝
     DataGroup* rg = refGroup();
     if (rg && !rg->seam.seams.isEmpty()) {
-        const theme::Palette& rpal = theme::GROUP_PALETTES[rg->paletteIdx];
+        const theme::Palette& rpal = theme::paletteOf(rg->paletteIdx);
         QColor sc = rpal.accent;
         sc.setAlphaF(0.75);
         QPen spen(sc);
@@ -408,7 +607,7 @@ void ChartView::drawPassDividers(QPainter& p) {
 
     for (DataGroup* g : *m_groups) {
         if (g->passes.isEmpty()) continue;
-        const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+        const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
         QColor c = pal.accent;
         c.setAlphaF(0.40);
         QPen pen(c);
@@ -429,7 +628,7 @@ void ChartView::drawPassAnnotations(QPainter& p) {
     if (!m_showSegments || m_overlayMode) return;
     DataGroup* g = refGroup();
     if (!g || g->passes.isEmpty()) return;
-    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
     QRect plot = plotRect();
     const double fs = fontScale();
 
@@ -461,7 +660,7 @@ void ChartView::drawPassAnnotations(QPainter& p) {
 void ChartView::drawOverlay(QPainter& p) {
     DataGroup* g = refGroup();
     if (!g || g->passes.isEmpty()) return;
-    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
     QColor dark(0x2b, 0x31, 0x38);
     int n = g->passes.size();
     for (int k = 0; k < n; ++k) {
@@ -575,7 +774,7 @@ void ChartView::drawLegend(QPainter& p) {
     if (m_overlayMode) {
         DataGroup* g = refGroup();
         if (g && !g->passes.isEmpty()) {
-            const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+            const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             QColor dark(0x2b, 0x31, 0x38);
             int n = g->passes.size();
             for (int k = 0; k < n; ++k) {
@@ -591,7 +790,11 @@ void ChartView::drawLegend(QPainter& p) {
         }
     } else {
         for (DataGroup* g : *m_groups) {
-            const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+            if (filterActive()) {
+                drawSegmented(p, g);   // 拆分视图：逐段绘制，段间不连线
+                continue;
+            }
+            const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             if (g->showPos) {
                 Entry e; e.color = pal.pos; e.style = Qt::SolidLine; e.customDash = false;
                 e.text = QStringLiteral("%1  PosR （左轴）").arg(pal.label);
@@ -752,7 +955,7 @@ void ChartView::paintEvent(QPaintEvent*) {
                      theme::C_MONITOR, Qt::DashLine, 1.0, true, 0.6);
         }
         for (DataGroup* g : *m_groups) {
-            const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+            const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
             if (g->showPos) {
                 drawLine(p, visibleXY(g->decCache, QStringLiteral("pos"), g->times, g->pos),
                          pal.pos, Qt::SolidLine, 1.6, false, 0.9);
@@ -881,7 +1084,7 @@ void ChartView::computeHover(double xm) {
         int idx = nearestIndex(g->times, xm);
         double tx = g->times[idx];
         if (g == rg) dispT = tx;
-        const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+        const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
 
         HoverMark m;
         m.tx = tx;

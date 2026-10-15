@@ -30,10 +30,13 @@ class StationTest : public QObject {
 
 private slots:
     void decodesMarkerRanges();
+    void decodesFineCraftRanges();
     void negativeMarkersDoNotCreatePasses();
     void tracksSeamsAcrossDetectAndGrind();
     void stickyRetryNumbering();
     void legacyStreamWithoutMarkers();
+    void buildsSegmentTable();
+    void detectSnapshotSurvivesRebuild();
 };
 
 void StationTest::decodesMarkerRanges() {
@@ -153,3 +156,127 @@ void StationTest::legacyStreamWithoutMarkers() {
 
 QTEST_GUILESS_MAIN(StationTest)
 #include "tst_station.moc"
+void StationTest::decodesFineCraftRanges() {
+    // 细磨复用同一套编码，整体 +100（工序位）；粗磨 = Rough，细磨 = Fine
+    QCOMPARE(decodePassNo(-11).craft, Craft::Rough);
+    QCOMPARE(decodePassNo(1).craft, Craft::Unknown);   // 正数道次不自带工序
+
+    for (int k = 1; k <= 8; ++k) {
+        const PassMark d = decodePassNo(-(100 + k));
+        QCOMPARE(d.phase, SeamPhase::Detect);
+        QCOMPARE(d.craft, Craft::Fine);
+        QCOMPARE(d.seam, k);
+
+        const PassMark g = decodePassNo(-(110 + k));
+        QCOMPARE(g.phase, SeamPhase::GrindGap);
+        QCOMPARE(g.craft, Craft::Fine);
+        QCOMPARE(g.seam, k);
+
+        const PassMark m = decodePassNo(-(120 + k));
+        QCOMPARE(m.phase, SeamPhase::Transfer);
+        QCOMPARE(m.craft, Craft::Fine);
+        QCOMPARE(m.seam, k);
+    }
+
+    QCOMPARE(decodePassNo(-99).phase, SeamPhase::Finish);
+    QCOMPARE(decodePassNo(-99).craft, Craft::Rough);
+    QCOMPARE(decodePassNo(-199).phase, SeamPhase::Finish);
+    QCOMPARE(decodePassNo(-199).craft, Craft::Fine);
+
+    // 未定义区间仍必须落回 None
+    QCOMPARE(decodePassNo(-100).phase, SeamPhase::None);
+    QCOMPARE(decodePassNo(-109).phase, SeamPhase::None);
+    QCOMPARE(decodePassNo(-110).phase, SeamPhase::None);
+    QCOMPARE(decodePassNo(-119).phase, SeamPhase::None);
+    QCOMPARE(decodePassNo(-120).phase, SeamPhase::None);
+    QCOMPARE(decodePassNo(-129).phase, SeamPhase::None);
+    QCOMPARE(decodePassNo(-198).phase, SeamPhase::None);
+}
+
+void StationTest::buildsSegmentTable() {
+    // 焊缝1：检测 -1 → 间隙 -11 → 道1 → 间隙 -11 → 道2 → 间隙 -11 → 补充道 12 → 间隙 -11
+    const QVector<int> pn{-1, -1, -11, 1, 1, -11, 2, -11, 12, -11};
+    const QVector<int> es{1000, 1005, 980, 1000, 1000, 1000, 1030, 1030, 1090, 1090};
+    const DataGroup g = makeGroup(pn, es);
+
+    const QVector<Segment>& seg = g.seam.segments;
+    QCOMPARE(seg.size(), 8);
+
+    // 段 0：检测（负标记段，带工序与焊缝号）
+    QCOMPARE(seg[0].kind, SeamPhase::Detect);
+    QCOMPARE(seg[0].craft, Craft::Rough);
+    QCOMPARE(seg[0].seam, 1);
+    QCOMPARE(seg[0].passNo, 0);
+    QCOMPARE(seg[0].i0, 0);
+    QCOMPARE(seg[0].i1, 1);
+
+    // 段 1：打磨间隙
+    QCOMPARE(seg[1].kind, SeamPhase::GrindGap);
+    QCOMPARE(seg[1].i0, 2);
+    QCOMPARE(seg[1].i1, 2);
+
+    // 段 2：第 1 道（kind == Grind 表示"打磨道次"）
+    QCOMPARE(seg[2].kind, SeamPhase::Grind);
+    QCOMPARE(seg[2].passNo, 1);
+    QCOMPARE(seg[2].seam, 1);
+    QCOMPARE(seg[2].craft, Craft::Rough);
+    QVERIFY(!seg[2].retry);
+    QCOMPARE(seg[2].i0, 3);
+    QCOMPARE(seg[2].i1, 4);
+
+    QCOMPARE(seg[4].kind, SeamPhase::Grind);
+    QCOMPARE(seg[4].passNo, 2);
+    QCOMPARE(seg[4].i0, 6);
+    QCOMPARE(seg[4].i1, 6);
+
+    // 段 6：补充打磨道（编号跳增）必须被标记
+    QCOMPARE(seg[6].kind, SeamPhase::Grind);
+    QCOMPARE(seg[6].passNo, 12);
+    QCOMPARE(seg[6].seam, 1);
+    QVERIFY(seg[6].retry);
+    QCOMPARE(seg[6].i0, 8);
+    QCOMPARE(seg[6].i1, 8);
+
+    // 最后一段（打磨间隙）必须被收尾闭合，否则图上会缺一段
+    QCOMPARE(seg[7].kind, SeamPhase::GrindGap);
+    QCOMPARE(seg[7].passNo, 0);
+    QCOMPARE(seg[7].i0, 9);
+    QCOMPARE(seg[7].i1, 9);
+
+    // 覆盖全部样点，且段间无缝衔接
+    for (int i = 1; i < seg.size(); ++i) {
+        QCOMPARE(seg[i].i0, seg[i - 1].i1 + 1);
+    }
+    QCOMPARE(seg.last().i1, pn.size() - 1);
+}
+
+void StationTest::detectSnapshotSurvivesRebuild() {
+    const QVector<int> pn{-1, -1, -11, 1};
+    const QVector<int> es{1000, 1005, 980, 1000};
+    DataGroup g = makeGroup(pn, es);
+
+    const SeamStat* before = g.seam.find(1);
+    QVERIFY(before);
+    QVERIFY(!before->hasValues);        // 离线重建不带检测字段
+
+    // 实时路径：检测段喂入检测结果（焊缝高度 1852µm / 基材 1214 / 错边 -120µm / 12 轮）
+    DetectVals dv;
+    dv.has = true;
+    dv.weldHum = 1852;
+    dv.baseH = 1214;
+    dv.misalignUm = -120;
+    dv.rounds = 12;
+    g.seam.feed(1.5, -1, 1000, 0, 1005, 1, dv);
+
+    // 重建（模拟裁剪 / 重新统计）后快照必须保留
+    rebuildSeamStats(g);
+    const SeamStat* after = g.seam.find(1);
+    QVERIFY(after);
+    QVERIFY(after->hasValues);
+    QCOMPARE(after->weldHum, 1852);
+    QCOMPARE(after->baseH, 1214);
+    QCOMPARE(after->misalignUm, -120);
+    QCOMPARE(after->rounds, 12);
+    QCOMPARE(after->craft, Craft::Rough);
+}
+

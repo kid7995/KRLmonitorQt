@@ -13,8 +13,19 @@ constexpr int LISTEN_PORT = 65002;
 constexpr int MAX_POINTS = 200000;
 // 超出上限后一次性裁掉最旧的这么多点
 constexpr int TRIM_CHUNK = 20000;
-// 最多同时显示的数据组数量
-constexpr int MAX_GROUPS = 4;
+// 数据组的硬上限（防止内存失控）。连续生产时真正起作用的是"内存保留组数"策略：
+// 组一旦落盘就被允许回收，见 KEEP_GROUPS_DEFAULT 与 MainWindow::enforceMemoryPolicy()。
+constexpr int MAX_GROUPS = 64;
+// 内存里最多保留多少组（更早的已落盘组会被自动回收）
+constexpr int KEEP_GROUPS_DEFAULT = 8;
+
+// ── 连续生产 / 自动存档默认值（都可在设置里改）──────────────────
+// 文件名模板占位符：{time} 到分钟、{date}、{part}、{craft}、{seams}
+inline const char* ARCHIVE_NAME_TMPL = "{time}_{part}_{craft}_{seams}";
+constexpr bool AUTO_SAVE_DEFAULT = true;      // 每个周期封组后自动落盘
+constexpr bool ARCHIVE_COMPRESS_DEFAULT = true;   // zlib 压缩
+constexpr bool ARCHIVE_OBFUSCATE_DEFAULT = true;  // 混淆（只有本软件能读）
+constexpr int PART_TIMEOUT_MIN_DEFAULT = 30;      // 超过这么久没有数据 -> 视为新件
 
 // ── 绘图抽稀 ────────────────────────────────────────────────────
 // 抽稀目标点数（超过时按 min/max 抽稀，保留峰值包络）
@@ -48,3 +59,13 @@ constexpr int SEAM_MARK_DETECT = 0;   // -k
 constexpr int SEAM_MARK_GRIND  = 10;  // -(10+k)
 constexpr int SEAM_MARK_MOVE   = 20;  // -(20+k)
 constexpr int SEAM_MARK_FINISH = 99;  // -99
+
+// 细磨（XiMo）用同一套规则，只是整体加 100（工序位）：
+//     PassNo  = -(100 + k)    细磨 检测阶段，焊缝 k
+//     PassNo  = -(110 + k)    细磨 打磨阶段·非打磨段，焊缝 k
+//     PassNo  = -(120 + k)    细磨 工位间转移，焊缝 k
+//     PassNo  = -199          细磨 收尾
+constexpr int SEAM_MARK_DETECT_FINE = 100;  // -(100+k)
+constexpr int SEAM_MARK_GRIND_FINE  = 110;  // -(110+k)
+constexpr int SEAM_MARK_MOVE_FINE   = 120;  // -(120+k)
+constexpr int SEAM_MARK_FINISH_FINE = 199;  // -199

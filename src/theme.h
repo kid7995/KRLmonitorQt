@@ -38,7 +38,9 @@ struct Palette {
     QColor bgForce;  // ForceR 按钮底色
 };
 
-inline const Palette GROUP_PALETTES[4] = {
+constexpr int PALETTE_COUNT = 4;
+
+inline const Palette GROUP_PALETTES[PALETTE_COUNT] = {
     // 组 1 — 蓝 / 粉红
     {"组 1", QColor(0x58,0xa6,0xff), QColor(0xf9,0x75,0x83), QColor(0x58,0xa6,0xff),
      QColor(0x0d,0x22,0x38), QColor(0x2d,0x0e,0x14)},
@@ -52,6 +54,16 @@ inline const Palette GROUP_PALETTES[4] = {
     {"组 4", QColor(0x39,0xd0,0xd8), QColor(0xff,0x7b,0x72), QColor(0x39,0xd0,0xd8),
      QColor(0x05,0x2a,0x2c), QColor(0x2d,0x0e,0x08)},
 };
+
+// 取配色的唯一入口：下标自动回绕到 [0, PALETTE_COUNT)。
+// 必须回绕 —— 连续生产会创建远超 4 个数据组（MAX_GROUPS = 64），
+// 直接 GROUP_PALETTES[i] 越界读到的是野 QString，会直接把进程打崩。
+inline const Palette& paletteOf(int idx) {
+    if (idx < 0) {
+        idx = 0;
+    }
+    return GROUP_PALETTES[idx % PALETTE_COUNT];
+}
 
 // 千分位格式化（等价于 Python 的 format(x, ',')）
 inline QString formatThousands(long long v) {

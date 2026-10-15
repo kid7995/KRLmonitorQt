@@ -20,6 +20,7 @@ void Recorder::arm() {
     m_recStartTime = 0.0;
     monSeam = 0;
     monPhase = SeamPhase::None;
+    monCraft = Craft::Unknown;
 }
 
 void Recorder::reset() {
@@ -30,6 +31,20 @@ void Recorder::reset() {
 
 void Recorder::markPrevUnknown() {
     m_prevRecordOn.reset();
+}
+
+bool Recorder::forceSeal(TickResult& r) {
+    if (recGroupIdx < 0 || recGroupIdx >= m_groups->size()) {
+        m_prevRecordOn = false;
+        return false;
+    }
+    DataGroup* g = (*m_groups)[recGroupIdx];
+    onFallingEdge(r);
+    if (g) {
+        g->incomplete = true;      // 断线/异常封存：数据可能不完整，界面必须标出来
+    }
+    m_prevRecordOn = false;        // 重连后的第一个上升沿一定新建组
+    return r.sealed;
 }
 
 bool Recorder::noteGroupRemoved(int idx) {
@@ -65,7 +80,7 @@ TickResult Recorder::process(QQueue<Sample>& queue, bool autoPause) {
         }
 
         if (ro && recGroupIdx >= 0) {
-            append(ts, pos, force, pn, es, r);
+            append(s, r);
         } else if (recGroupIdx < 0) {
             // 灰色预览：只跟踪阶段/焊缝，供状态栏显示，不做统计
             const PassMark mk = decodePassNo(pn);
@@ -83,6 +98,11 @@ TickResult Recorder::process(QQueue<Sample>& queue, bool autoPause) {
             r.lastPass = pn;
             r.lastSeam = monSeam;
             r.lastPhase = monPhase;
+            const Craft mc = decodePassNo(pn).craft;
+            if (mc != Craft::Unknown) {
+                monCraft = mc;      // 与焊缝号同理：只在负标记帧刷新
+            }
+            r.lastCraft = monCraft;
         }
 
         if (!ro && m_prevRecordOn.value()) {
@@ -125,6 +145,10 @@ void Recorder::onFallingEdge(TickResult& r) {
         g->passes.last().t1 = g->times.last();
         g->passes.last().i1 = g->times.size() - 1;
     }
+    // 段表收尾：把最后一段（通常是收尾的非打磨段）闭合，保证段表完整
+    if (!g->times.isEmpty()) {
+        g->seam.finishSegments(g->times.last(), g->times.size() - 1);
+    }
     g->curPass = 0;
     g->seam.clearLive();
     r.sealed = true;
@@ -137,8 +161,13 @@ void Recorder::onFallingEdge(TickResult& r) {
     r.seamDirty = true;
 }
 
-void Recorder::append(double ts, int pos, int force, int pn, int es, TickResult& r) {
+void Recorder::append(const Sample& s, TickResult& r) {
     DataGroup* g = (*m_groups)[recGroupIdx];
+    const double ts = s.ts;
+    const int pos = s.pos;
+    const int force = s.force;
+    const int pn = s.passNo;
+    const int es = s.esPos;
     const double rt = ts - m_recStartTime;
     g->times.append(rt);
     g->pos.append(pos);
@@ -154,7 +183,14 @@ void Recorder::append(double ts, int pos, int force, int pn, int es, TickResult&
     }
 
     updatePasses(g, rt, pn, r);
-    g->seam.feed(rt, pn, pos, force, es, g->times.size() - 1);
+
+    DetectVals dv;
+    dv.has = s.hasDetect;
+    dv.weldHum = s.weldHum;
+    dv.baseH = s.baseH;
+    dv.misalignUm = s.misalignUm;
+    dv.rounds = s.rounds;
+    g->seam.feed(rt, pn, pos, force, es, g->times.size() - 1, dv);
 
     trimIfNeeded(g, r);
 
@@ -166,6 +202,7 @@ void Recorder::append(double ts, int pos, int force, int pn, int es, TickResult&
     r.lastPass = pn;
     r.lastSeam = g->seam.curSeam;
     r.lastPhase = g->seam.curPhase;
+    r.lastCraft = g->seam.curCraft;
 }
 
 void Recorder::updatePasses(DataGroup* g, double rt, int pn, TickResult& r) {

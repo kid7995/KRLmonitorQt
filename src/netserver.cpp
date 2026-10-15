@@ -17,11 +17,16 @@ TcpServer::~TcpServer() {
 
 bool TcpServer::startListen(quint16 port, const QHostAddress& host) {
     m_server = new QTcpServer(this);
+    m_port = port;
     if (!m_server->listen(host, port)) {
+        m_listening = false;
+        m_lastError = m_server->errorString();
         emit statusChanged(QStringLiteral("✗ 监听失败：%1 — %2")
                            .arg(port).arg(m_server->errorString()));
         return false;
     }
+    m_listening = true;
+    m_lastError.clear();
     connect(m_server, &QTcpServer::newConnection, this, &TcpServer::onNewConnection);
     emit statusChanged(QStringLiteral("◎ 监听 %1 端口（所有网卡），等待 KUKA 连接…").arg(port));
     return true;
@@ -35,6 +40,7 @@ void TcpServer::onNewConnection() {
         connect(s, &QTcpSocket::readyRead, this, &TcpServer::onReadyRead);
         connect(s, &QTcpSocket::disconnected, this, &TcpServer::onDisconnected);
         emit statusChanged(QStringLiteral("● KUKA 已连接：%1").arg(s->peerAddress().toString()));
+        emit clientChanged(true);
     }
 }
 
@@ -54,6 +60,8 @@ void TcpServer::onDisconnected() {
     m_buffers.remove(s);
     s->deleteLater();
     emit statusChanged(QStringLiteral("○ KUKA 已断线，等待重新连接…"));
+    emit disconnected();
+    emit clientChanged(!m_sockets.isEmpty());
 }
 
 void TcpServer::handleData(QTcpSocket* s) {

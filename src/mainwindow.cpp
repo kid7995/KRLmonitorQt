@@ -13,6 +13,18 @@
 #include <QFileDialog>
 #include <QDialog>
 #include <QFileInfo>
+#include <QDir>
+#include <QDateTime>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QLineEdit>
+#include <QSpinBox>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QFormLayout>
+#include <QListWidget>
+#include <QNetworkInterface>
+#include <QAbstractSocket>
 #include <algorithm>
 
 #include "theme.h"
@@ -20,8 +32,53 @@
 #include "chartview.h"
 #include "netserver.h"
 #include "csvio.h"
+#include "part.h"
+#include "ecmfile.h"
 
 namespace {
+
+// 一组的"焊缝范围 + 工序"：用于组名与存档文件名
+void seamRangeOf(const DataGroup& g, int* first, int* last, Craft* craft) {
+    int f = 0;
+    int l = 0;
+    Craft c = Craft::Unknown;
+    for (const Segment& s : g.seam.segments) {
+        if (s.seam <= 0) {
+            continue;
+        }
+        if (f == 0 || s.seam < f) {
+            f = s.seam;
+        }
+        if (s.seam > l) {
+            l = s.seam;
+        }
+        if (c == Craft::Unknown && s.craft != Craft::Unknown) {
+            c = s.craft;
+        }
+    }
+    if (first) *first = f;
+    if (last) *last = l;
+    if (craft) *craft = c;
+}
+
+QString phaseViewLabel(PhaseView v) {
+    switch (v) {
+    case PhaseView::DetectOnly: return QStringLiteral("阶段：仅检测");
+    case PhaseView::GrindOnly:  return QStringLiteral("阶段：仅打磨");
+    case PhaseView::GapOnly:    return QStringLiteral("阶段：仅间隙");
+    case PhaseView::All:        break;
+    }
+    return QStringLiteral("阶段：全部");
+}
+
+QString craftViewLabel(CraftView v) {
+    switch (v) {
+    case CraftView::RoughOnly: return QStringLiteral("工序：仅粗磨");
+    case CraftView::FineOnly:  return QStringLiteral("工序：仅细磨");
+    case CraftView::All:       break;
+    }
+    return QStringLiteral("工序：全部");
+}
 
 QPushButton* makeBtn(const QString& text, const QColor& bg, const QColor& bgHi,
                      const QColor& fg = QColor(Qt::white), const QColor& fgHi = QColor(Qt::white)) {
@@ -62,7 +119,7 @@ void styleToggle(QPushButton* btn, bool on, const QString& label) {
 }
 
 void stylePosButton(QPushButton* b, DataGroup* g) {
-    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
     if (g->showPos) {
         b->setText(QStringLiteral("● PosR ✓"));
         b->setStyleSheet(QString(
@@ -77,7 +134,7 @@ void stylePosButton(QPushButton* b, DataGroup* g) {
 }
 
 void styleForceButton(QPushButton* b, DataGroup* g) {
-    const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
     if (g->showForce) {
         b->setText(QStringLiteral("● ForceR ✓"));
         b->setStyleSheet(QString(
@@ -105,7 +162,7 @@ int pickGroupDialog(QWidget* parent, const QVector<DataGroup*>& groups, const QS
     int result = -1;
     for (int i = 0; i < groups.size(); ++i) {
         DataGroup* g = groups[i];
-        const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+        const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
         auto* btn = new QPushButton(
             QStringLiteral("%1  %2  (%3 pts)")
                 .arg(pal.label, g->name, theme::formatThousands(g->len())), &dlg);
@@ -162,13 +219,37 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     m_server = new TcpServer(this);
     connect(m_server, &TcpServer::statusChanged, this, &MainWindow::onStatus);
-    m_server->startListen(LISTEN_PORT);
+    connect(m_server, &TcpServer::disconnected, this, &MainWindow::onServerDisconnected);
+    connect(m_server, &TcpServer::clientChanged, this, [this](bool) { refreshLinkLabel(); });
+    m_listenOk = m_server->startListen(LISTEN_PORT);
+    refreshLocalIps();
+    refreshLinkLabel();
+    if (!m_listenOk) {
+        // 不用模态对话框：监控程序要能无人值守启动。失败信息常驻在指示灯与状态栏，
+        // 同时也写进启动日志（见 writeStartupLog），避免"看起来在跑其实没监听"。
+        setStatus(QStringLiteral("✗ 端口 %1 监听失败：%2 —— KUKA 无法连入，请检查端口占用")
+                  .arg(LISTEN_PORT).arg(m_server->lastError()));
+    }
+
+    loadSettings();
+    m_parts.configure(m_arch.rule, m_arch.timeoutMin);
+    m_parts.reset(QDateTime::currentDateTime());
+    seedPartSeqFromArchive();
 
     m_tickTimer = new QTimer(this);
     connect(m_tickTimer, &QTimer::timeout, this, &MainWindow::onTick);
     m_tickTimer->start(FRAME_INTERVAL_MS);
 
     syncToggles();
+    applyViewFilters();
+    writeStartupLog();      // 放在设置载入之后，日志里才能带上真实的配置
+
+    // "打开即通讯、打开即等待数据录入"：默认自动进入监听
+    // --arm 命令行参数可强制进入监听（不依赖设置；现场做开机自启/快捷方式时很方便）
+    const bool forceArm = QCoreApplication::arguments().contains(QStringLiteral("--arm"));
+    if (m_arch.autoArm || forceArm) {
+        QTimer::singleShot(0, this, &MainWindow::onStart);
+    }
 }
 
 MainWindow::~MainWindow() {
@@ -212,6 +293,16 @@ void MainWindow::buildToolbar() {
     connect(btnClear, &QPushButton::clicked, this, &MainWindow::onClear);
     h->addWidget(btnClear);
 
+    auto* btnNewPart = makeBtn(QStringLiteral("✂ 新件"), theme::C_WARN, theme::C_WARN_HI);
+    btnNewPart->setToolTip(QStringLiteral("手工切分：下一组数据算作新的一件（分件规则失效时的兜底）"));
+    connect(btnNewPart, &QPushButton::clicked, this, &MainWindow::onNewPart);
+    h->addWidget(btnNewPart);
+
+    auto* btnSettings = makeBtn(QStringLiteral("⛭ 设置"), theme::BORDER, theme::C_HOVER,
+                                theme::C_DIM, theme::C_TEXT);
+    connect(btnSettings, &QPushButton::clicked, this, &MainWindow::onSettings);
+    h->addWidget(btnSettings);
+
     h->addSpacing(8);
     h->addWidget(vSeparator());
 
@@ -232,6 +323,13 @@ void MainWindow::buildToolbar() {
     h->addWidget(m_btnAutoPause);
 
     h->addStretch();
+    // 常驻连接指示灯：优先于会不断被刷新的状态文字，保证"看着是否通"这件事永远可见
+    m_linkLabel = new QLabel(QStringLiteral("🔌 端口 %1 ○ 等待 KUKA 连接").arg(LISTEN_PORT), bar);
+    m_linkLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
+                               .arg(theme::C_WARN_HI.name()));
+    h->addWidget(m_linkLabel);
+    h->addSpacing(14);
+
     m_statusLabel = new QLabel(QStringLiteral("◎ 正在启动…"), bar);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;").arg(theme::C_DIM.name()));
     h->addWidget(m_statusLabel);
@@ -273,6 +371,15 @@ void MainWindow::buildZoomBar() {
 
     h->addSpacing(8);
     h->addWidget(vSeparator());
+
+    // 拆分视图：阶段 / 工序 过滤（需求 2、4）
+    m_btnPhase = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    connect(m_btnPhase, &QPushButton::clicked, this, &MainWindow::togglePhaseView);
+    h->addWidget(m_btnPhase);
+
+    m_btnCraft = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    connect(m_btnCraft, &QPushButton::clicked, this, &MainWindow::toggleCraftView);
+    h->addWidget(m_btnCraft);
 
     auto* btnReset = new QPushButton(QStringLiteral("↺ 重置视图"), bar);
     btnReset->setCursor(Qt::PointingHandCursor);
@@ -347,163 +454,204 @@ void MainWindow::buildSeamPanel() {
     outer->setStyleSheet(QStringLiteral(
         "background-color:%1;border-top:1px solid %2;border-bottom:1px solid %2;")
         .arg(theme::PANEL.name(), theme::BORDER.name()));
-    auto* v = new QVBoxLayout(outer);
-    v->setContentsMargins(10, 5, 10, 7);
-    v->setSpacing(4);
+    auto* v = new QHBoxLayout(outer);
+    v->setContentsMargins(10, 4, 10, 5);
+    v->setSpacing(6);
 
-    auto* hdr = new QHBoxLayout();
     auto* title = new QLabel(QStringLiteral("🧲  焊缝（工位）实时数据"), outer);
     title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
                          .arg(theme::C_INFO_HI.name()));
-    hdr->addWidget(title);
-    m_seamHint = new QLabel(QString(), outer);
-    m_seamHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
-    hdr->addWidget(m_seamHint);
-    hdr->addStretch();
-    auto* legend = new QLabel(QStringLiteral("焊缝号由 KRL 侧 PassNo 负数标记给出（-k 检测 / -(10+k) 打磨间隙）"), outer);
-    legend->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
-    hdr->addWidget(legend);
-    v->addLayout(hdr);
+    v->addWidget(title);
 
     m_seamWidget = new QWidget(outer);
     m_seamLayout = new QHBoxLayout(m_seamWidget);
     m_seamLayout->setContentsMargins(0, 0, 0, 0);
-    m_seamLayout->setSpacing(8);
+    m_seamLayout->setSpacing(3);
     v->addWidget(m_seamWidget);
 
+    // 8 个 chip 常驻：显示"几号焊缝"，同时兼任"曲线里显示哪些焊缝"的开关。
+    // 默认全选（= 不过滤）；点一下取消该焊缝的曲线。
+    for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
+        auto* b = new QPushButton(QString::number(k), m_seamWidget);
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(32, 24);
+        b->setToolTip(QStringLiteral("焊缝 %1：点击切换是否在曲线中显示").arg(k));
+        connect(b, &QPushButton::clicked, this, [this, k]() {
+            setSeamSelected(k, !m_seamSel.contains(k));
+        });
+        m_seamLayout->addWidget(b);
+        m_seamChips.insert(k, b);
+    }
+    auto* btnAll = new QPushButton(QStringLiteral("全选"), m_seamWidget);
+    btnAll->setCursor(Qt::PointingHandCursor);
+    btnAll->setFixedHeight(24);
+    btnAll->setStyleSheet(QString(
+        "QPushButton{background-color:%1;color:%2;border:none;padding:0 8px;font-size:9pt;}"
+        "QPushButton:hover{background-color:%3;color:%4;}")
+        .arg(theme::BORDER.name(), theme::C_DIM.name(),
+             theme::C_HOVER.name(), theme::C_TEXT.name()));
+    connect(btnAll, &QPushButton::clicked, this, [this]() {
+        for (int k = 1; k <= SEAM_COUNT_MAX; ++k) m_seamSel.insert(k);
+        refreshSeamChips();
+        applyViewFilters();
+    });
+    m_seamLayout->addWidget(btnAll);
+
+    auto* btnNone = new QPushButton(QStringLiteral("全不选"), m_seamWidget);
+    btnNone->setCursor(Qt::PointingHandCursor);
+    btnNone->setFixedHeight(24);
+    btnNone->setStyleSheet(btnAll->styleSheet());
+    connect(btnNone, &QPushButton::clicked, this, [this]() {
+        m_seamSel.clear();
+        refreshSeamChips();
+        applyViewFilters();
+    });
+    m_seamLayout->addWidget(btnNone);
+
+    v->addSpacing(10);
+
+    // 检测结果（需求 1）：该焊缝的焊缝高度 / 基材高度 / 错边量 / 计划轮次
+    m_detectLabel = new QLabel(QString(), outer);
+    m_detectLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
+                                 .arg(theme::C_PASS.name()));
+    m_detectLabel->setMinimumWidth(460);
+    v->addWidget(m_detectLabel);
+
+    v->addStretch();
+    m_seamHint = new QLabel(QString(), outer);
+    m_seamHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
+    v->addWidget(m_seamHint);
+
     m_rootLayout->addWidget(outer);
+
+    for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
+        m_seamSel.insert(k);      // 默认全选
+    }
     refreshSeamPanel();
 }
 
 void MainWindow::refreshSeamPanel() {
-    const int gi = seamPanelGroupIdx();
-    QVector<int> seamList;
-    if (gi >= 0 && gi < m_groups.size()) {
-        for (const SeamStat& s : m_groups[gi]->seam.seams) {
-            seamList.append(s.seam);
-        }
-    }
-    std::sort(seamList.begin(), seamList.end());
-
-    QString sig;
-    for (int seam : seamList) {
-        sig += QStringLiteral("%1,").arg(seam);
-    }
-    if (gi == m_seamCardsGroup && sig == m_seamCardsSig) {
-        updateSeamCards();      // 集合没变，只刷新文字
-        return;
-    }
-    m_seamCardsGroup = gi;
-    m_seamCardsSig = sig;
-    m_seamCards.clear();
-
-    QLayoutItem* item;
-    while ((item = m_seamLayout->takeAt(0)) != nullptr) {
-        if (item->widget()) item->widget()->deleteLater();
-        delete item;
-    }
-
-    if (seamList.isEmpty()) {
-        const QString msg = (gi >= 0 && gi < m_groups.size())
-            ? QStringLiteral("该数据组不含焊缝标记（旧程序 / 旧 CSV：PassNo 全为非负数）")
-            : QStringLiteral("开始监控或载入数据后，这里显示各焊缝（工位）的实时数据与打磨次数");
-        auto* lbl = new QLabel(msg, m_seamWidget);
-        lbl->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
-        m_seamLayout->addWidget(lbl);
-        m_seamLayout->addStretch();
-        m_seamHint->setText(QString());
-        return;
-    }
-
-    m_seamHint->setText(QStringLiteral("  共 %1 个焊缝").arg(seamList.size()));
-
-    for (int seam : seamList) {
-        const QColor accent = theme::GROUP_PALETTES[(seam - 1) % 4].accent;
-        auto* card = new QFrame(m_seamWidget);
-        card->setStyleSheet(QStringLiteral(
-            "QFrame{background-color:%1;border:1px solid %2;border-left:3px solid %3;border-radius:6px;}")
-            .arg(theme::BG.name(), theme::BORDER.name(), accent.name()));
-        auto* cv = new QVBoxLayout(card);
-        cv->setContentsMargins(9, 6, 8, 7);
-        cv->setSpacing(3);
-
-        SeamCardWidgets w;
-        w.card = card;
-        w.title = new QLabel(QStringLiteral("焊缝 %1").arg(seam), card);
-        w.title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
-                               .arg(accent.name()));
-        cv->addWidget(w.title);
-        w.state = new QLabel(QStringLiteral("—"), card);
-        cv->addWidget(w.state);
-        w.pass = new QLabel(QStringLiteral("—"), card);
-        w.pass->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_TEXT.name()));
-        cv->addWidget(w.pass);
-        w.count = new QLabel(QStringLiteral("正常 0 道 · 补充 0 次"), card);
-        cv->addWidget(w.count);
-        w.values = new QLabel(QStringLiteral("PosR  —\nForceR  —\nESpos  —"), card);
-        w.values->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
-        cv->addWidget(w.values);
-
-        m_seamLayout->addWidget(card, 1);
-        m_seamCards.insert(seam, w);
-    }
-    m_seamLayout->addStretch();
-    updateSeamCards();
+    refreshSeamChips();
+    refreshSeamDetail();
 }
 
-void MainWindow::updateSeamCards() {
-    const int gi = seamPanelGroupIdx();
-    if (gi < 0 || gi >= m_groups.size()) {
+void MainWindow::setSeamSelected(int seam, bool on) {
+    if (seam < 1 || seam > SEAM_COUNT_MAX) {
         return;
     }
-    DataGroup* g = m_groups[gi];
+    if (on) {
+        m_seamSel.insert(seam);
+        m_detailSeam = seam;        // 顺手把详情切到这条焊缝
+    } else {
+        m_seamSel.remove(seam);
+    }
+    refreshSeamChips();
+    refreshSeamDetail();
+    applyViewFilters();
+}
 
-    for (auto it = m_seamCards.begin(); it != m_seamCards.end(); ++it) {
-        const SeamStat* s = g->seam.find(it.key());
-        if (!s) {
+void MainWindow::applyViewFilters() {
+    if (!m_chart) {
+        return;
+    }
+    // 8 条全选 = 不过滤：走原来的抽稀快路径；一旦有取消，才切到"逐段绘制"的拆分视图
+    QSet<int> eff;
+    if (m_seamSel.size() < SEAM_COUNT_MAX) {
+        eff = m_seamSel;
+    }
+    m_chart->setSeamFilter(eff);
+    m_chart->setPhaseView(m_phaseView);
+    m_chart->setCraftView(m_craftView);
+}
+
+void MainWindow::refreshSeamChips() {
+    const int gi = seamPanelGroupIdx();
+    const DataGroup* g = (gi >= 0 && gi < m_groups.size()) ? m_groups[gi] : nullptr;
+
+    for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
+        QPushButton* b = m_seamChips.value(k);
+        if (!b) {
             continue;
         }
-        SeamCardWidgets& w = it.value();
+        const SeamStat* s = g ? g->seam.find(k) : nullptr;
+        const bool has = (s != nullptr);
+        const bool sel = m_seamSel.contains(k);
+        const bool liveNow = has && g->live && s->live;
+        const QColor accent = theme::paletteOf(k - 1).accent;
 
-        QString st = QStringLiteral("○ 已完成");
-        QColor stc = theme::C_DIM;
-        if (g->live) {
-            if (s->live) {
-                const bool grinding = (g->seam.curPhase == SeamPhase::Grind
-                                       || g->seam.curPhase == SeamPhase::GrindGap
-                                       || g->seam.curPhase == SeamPhase::Transfer);
-                st = grinding ? QStringLiteral("● 打磨中") : QStringLiteral("● 检测中");
-                stc = grinding ? theme::C_REC : theme::C_WARN_HI;
-            } else if (s->detected && s->curPass == 0) {
-                st = QStringLiteral("○ 待打磨");
-            }
+        QString txt = QString::number(k);
+        if (has && (s->normalN + s->retryN) > 0) {
+            txt += QStringLiteral("│%1").arg(s->normalN + s->retryN);
         }
-        w.state->setText(st);
-        w.state->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;font-weight:bold;")
-                               .arg(stc.name()));
+        b->setText(txt);
+        b->setChecked(sel);
 
-        QString passTxt = QStringLiteral("—");
-        if (s->curPass > 0) {
-            passTxt = QStringLiteral("第 %1 遍").arg(s->curPass);
-            if (s->retryNow) {
-                passTxt += QStringLiteral("（补充打磨）");
-            }
+        QString bg = theme::BORDER.name();
+        QString fg = theme::C_DIM.name();
+        if (has) {
+            bg = sel ? accent.name() : theme::BG.name();
+            fg = sel ? QStringLiteral("#ffffff") : accent.name();
         }
-        w.pass->setText(passTxt);
-
-        w.count->setText(QStringLiteral("正常 %1 道 · 补充 %2 次").arg(s->normalN).arg(s->retryN));
-        w.count->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;")
-                               .arg(s->retryN ? theme::C_WARN_HI.name() : theme::C_PASS.name()));
-
-        QString vals = QStringLiteral("PosR  %1\nForceR  %2\nESpos  %3")
-                           .arg(theme::formatThousands(s->lastPos),
-                                theme::formatThousands(s->lastForce),
-                                theme::formatThousands(s->lastEs));
-        if (s->detected) {
-            vals += QStringLiteral("\n基准  %1（检测）").arg(theme::formatThousands(s->detectEs));
-        }
-        w.values->setText(vals);
+        const QString border = liveNow ? theme::C_REC.name() : theme::BORDER.name();
+        b->setStyleSheet(QString(
+            "QPushButton{background-color:%1;color:%2;border:2px solid %3;"
+            "border-radius:4px;font-weight:bold;font-size:9pt;padding:0;}")
+            .arg(bg, fg, border));
     }
+}
+
+void MainWindow::refreshSeamDetail() {
+    if (!m_detectLabel) {
+        return;
+    }
+    const int gi = seamPanelGroupIdx();
+    const DataGroup* g = (gi >= 0 && gi < m_groups.size()) ? m_groups[gi] : nullptr;
+    if (!g) {
+        m_detectLabel->setText(QString());
+        return;
+    }
+    int seam = m_detailSeam;
+    if (seam <= 0) {
+        seam = g->seam.curSeam;
+    }
+    if (seam <= 0 && !g->seam.seams.isEmpty()) {
+        seam = g->seam.seams.first().seam;
+    }
+    const SeamStat* s = (seam > 0) ? g->seam.find(seam) : nullptr;
+    if (!s) {
+        m_detectLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
+                                     .arg(theme::C_DIM.name()));
+        m_detectLabel->setText(QStringLiteral("焊缝 —   ·   未检测"));
+        return;
+    }
+
+    auto mm = [](int um) {
+        const double v = um / 1000.0;
+        return QStringLiteral("%1%2").arg(v < 0 ? QStringLiteral("-") : QStringLiteral("+"))
+                                     .arg(qAbs(v), 0, 'f', 3);
+    };
+
+    QStringList parts;
+    parts << QStringLiteral("焊缝 %1").arg(seam);
+    if (s->craft != Craft::Unknown) {
+        parts << craftLabel(s->craft);
+    }
+    if (s->hasValues) {
+        parts << QStringLiteral("焊缝高度 %1 mm").arg(mm(s->weldHum));
+        parts << QStringLiteral("基材高度 %1").arg(theme::formatThousands(s->baseH));
+        parts << QStringLiteral("错边量 %1 mm").arg(mm(s->misalignUm));
+        parts << QStringLiteral("计划 %1 轮").arg(s->rounds);
+    } else if (s->detected) {
+        parts << QStringLiteral("基准 %1（本程序未上报检测值）").arg(theme::formatThousands(s->detectEs));
+    } else {
+        parts << QStringLiteral("未检测");
+    }
+    parts << QStringLiteral("正常 %1 道 / 补 %2 次").arg(s->normalN).arg(s->retryN);
+
+    m_detectLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
+                                 .arg(s->hasValues ? theme::C_PASS.name() : theme::C_DIM.name()));
+    m_detectLabel->setText(parts.join(QStringLiteral("   ·   ")));
 }
 
 QString MainWindow::seamSummary(const DataGroup& g) const {
@@ -528,8 +676,8 @@ void MainWindow::buildValueBar() {
     h->setContentsMargins(12, 4, 12, 4);
     h->setSpacing(4);
 
-    const QColor posC = theme::GROUP_PALETTES[0].pos;
-    const QColor forceC = theme::GROUP_PALETTES[0].force;
+    const QColor posC = theme::paletteOf(0).pos;
+    const QColor forceC = theme::paletteOf(0).force;
 
     auto addVal = [&](const QString& title, const QColor& color, QLabel*& outVal, int w) {
         auto* t = new QLabel(title, bar);
@@ -604,7 +752,7 @@ void MainWindow::refreshGroupsPanel() {
     m_groupsHint->setText(QStringLiteral("  %1 / %2 组已载入%3")
         .arg(n).arg(MAX_GROUPS)
         .arg(n < MAX_GROUPS
-             ? QStringLiteral("  ·  点击\"添加数据组\"导入 CSV 文件")
+             ? QStringLiteral("  ·  自动存档目录：%1").arg(todayArchiveDir())
              : QStringLiteral("  ·  已达上限，请先删除一组再添加")));
 
     if (m_groups.isEmpty()) {
@@ -619,7 +767,7 @@ void MainWindow::refreshGroupsPanel() {
 
     for (int i = 0; i < m_groups.size(); ++i) {
         DataGroup* g = m_groups[i];
-        const theme::Palette& pal = theme::GROUP_PALETTES[g->paletteIdx];
+        const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
         QString accent = pal.accent.name();
 
         auto* card = new QFrame(m_cardsWidget);
@@ -632,7 +780,18 @@ void MainWindow::refreshGroupsPanel() {
 
         // 标题行：徽章 + 文件名 + 删除
         auto* titleRow = new QHBoxLayout();
+        // 徽章：组色 + 状态（🔴 记录中 / ✓ 已存档 / ⚠ 断线强制封存，数据可能不完整）
         QString badge = pal.label + (g->live ? QStringLiteral("🔴") : QString());
+        if (g->incomplete) {
+            badge += QStringLiteral("⚠");
+        } else if (g->saved) {
+            badge += QStringLiteral("✓");
+        }
+        if (!g->savedPath.isEmpty()) {
+            card->setToolTip(QStringLiteral("已存档：%1").arg(g->savedPath));
+        } else if (!g->partLabel.isEmpty()) {
+            card->setToolTip(g->partLabel);
+        }
         auto* badgeLbl = new QLabel(badge, card);
         badgeLbl->setStyleSheet(QStringLiteral("background-color:%1;color:%2;padding:1px 5px;font-weight:bold;font-size:8pt;")
                                 .arg(accent, theme::BG.name()));
@@ -710,8 +869,10 @@ void MainWindow::updateGroupPoints(DataGroup* g, int n) {
 
 int MainWindow::nextPaletteIdx() const {
     QSet<int> used;
-    for (DataGroup* g : m_groups) used.insert(g->paletteIdx);
-    for (int i = 0; i < MAX_GROUPS; ++i) {
+    for (DataGroup* g : m_groups) used.insert(g->paletteIdx % theme::PALETTE_COUNT);
+    // 只在调色板范围内挑空位：连续生产的组数远超调色板数量，颜色复用是预期行为，
+    // 但下标绝不能超过数组长度（paletteOf() 也会再兜一层回绕）。
+    for (int i = 0; i < theme::PALETTE_COUNT; ++i) {
         if (!used.contains(i)) return i;
     }
     return 0;
@@ -746,6 +907,7 @@ int MainWindow::addGroup(const QString& name, const QVector<double>& times,
     int idx = m_groups.size() - 1;
 
     refreshGroupsPanel();
+    refreshSeamPanel();
     m_chart->setRefGroupIdx(refGroupIdx());
     if (!m_chart->locked() && g->len()) {
         m_chart->relimAll();
@@ -768,6 +930,7 @@ void MainWindow::removeGroup(int idx) {
     m_groups.removeAt(idx);
 
     refreshGroupsPanel();
+    refreshSeamPanel();
     m_chart->setRefGroupIdx(refGroupIdx());
     if (m_overlayMode) rebuildOverlayStatus();
     if (!m_chart->locked()) m_chart->relimAll();
@@ -810,6 +973,12 @@ void MainWindow::syncToggles() {
     styleToggle(m_btnOverlay, m_overlayMode, QStringLiteral("≡ 叠道对比"));
     styleToggle(m_btnEsPos, m_showEsPos, QStringLiteral("⌐ ESpos"));
     styleToggle(m_btnAutoPause, m_autoPause, QStringLiteral("⏹ 完成后暂停"));
+    if (m_btnPhase) {
+        styleToggle(m_btnPhase, m_phaseView != PhaseView::All, phaseViewLabel(m_phaseView));
+    }
+    if (m_btnCraft) {
+        styleToggle(m_btnCraft, m_craftView != CraftView::All, craftViewLabel(m_craftView));
+    }
 }
 
 void MainWindow::rebuildOverlayStatus() {
@@ -841,6 +1010,11 @@ void MainWindow::updateHoverActive() {
 // ── 帧循环 ──────────────────────────────────────────────────────
 
 void MainWindow::onTick() {
+    if (++m_tickCount % 50 == 0) {
+        // 每 ~6 秒刷一次：DHCP 换址、网线插拔、对端接入/断开都能及时反映出来
+        refreshLocalIps();
+        refreshLinkLabel();
+    }
     if (m_paused || !m_server->armed()) return;
 
     TickResult res = m_recorder->process(m_server->queue(), m_autoPause);
@@ -851,7 +1025,10 @@ void MainWindow::onTick() {
                   .arg(MAX_GROUPS));
     }
     if (res.started >= 0) {
-        setStatus(QStringLiteral("🔴 记录中 — 打磨#%1").arg(res.started));
+        // 新周期开始：交给分件器决定是"同一件的新周期"还是"新的一件"
+        m_parts.onCycleStart(QDateTime::currentDateTime());
+        setStatus(QStringLiteral("🔴 记录中 — %1（第 %2 组）")
+                  .arg(m_parts.current().label).arg(res.started));
     }
 
     if ((anyTouched || res.monDirty) && !m_chart->locked()) {
@@ -910,6 +1087,14 @@ void MainWindow::onTick() {
         m_seamContext->setText(QStringLiteral("焊缝 —/8 · 无标记"));
     }
 
+    // 件（料件）识别：把本帧的焊缝号/工序喂给分件器（CraftRestart / SeamWrap 规则在此判定）
+    if (res.hasLastVal && res.lastSeam > 0) {
+        if (m_parts.onSeamSeen(res.lastSeam, res.lastCraft, QDateTime::currentDateTime())) {
+            setStatus(QStringLiteral("✂ 已按焊缝序列切分新件：%1").arg(m_parts.current().label));
+        }
+        m_detailSeam = 0;      // 详情跟随当前焊缝
+    }
+
     // 记录状态指示灯
     if (m_recorder->recGroupIdx >= 0) {
         setRecState(QStringLiteral("🔴 记录中"), theme::C_REC);
@@ -933,18 +1118,40 @@ void MainWindow::onTick() {
 
     // 下降沿：按"完成后暂停"开关决定冻结还是继续监听
     if (res.sealed) {
-        const QString summary = res.sealedGroup ? seamSummary(*res.sealedGroup)
-                                                : QStringLiteral("%1 道").arg(res.sealedPasses);
+        m_parts.onCycleEnd(QDateTime::currentDateTime());
+        QString label = res.sealedName;
+        QString summary = QStringLiteral("%1 道").arg(res.sealedPasses);
+        QString tail;
+        if (res.sealedGroup) {
+            DataGroup* g = res.sealedGroup;
+            g->partLabel = m_parts.current().label;
+            const QString display = groupDisplayName(*g);
+            if (!display.isEmpty()) {
+                g->name = display;
+            }
+            label = g->name;
+            summary = seamSummary(*g);
+            // 封组就自动落盘（需求 5）：失败不丢内存数据，只在状态栏报错
+            autoArchiveGroup(g);
+            if (g->saved) {
+                tail = QStringLiteral("　已存档：%1").arg(QFileInfo(g->savedPath).fileName());
+            } else if (g->incomplete) {
+                tail = QStringLiteral("　⚠ 数据可能不完整");
+            }
+        }
+        // 注意：内存回收可能把刚封的那一组也回收掉，此后不得再解引用 res.sealedGroup
+        enforceMemoryPolicy();
+        refreshGroupsPanel();
         if (m_autoPause) {
             m_paused = true;
             m_server->setArmed(false);
             m_btnPause->setText(QStringLiteral("▶  继续"));
             updateHoverActive();
-            setStatus(QStringLiteral("⏹ %1 记录完成（%2 道）— 已冻结暂停，移动鼠标查看数值，点\"继续\"等待下次打磨")
-                      .arg(res.sealedName).arg(res.sealedPasses));
+            setStatus(QStringLiteral("⏹ %1 记录完成（%2）%3 — 已冻结暂停，点\"继续\"等待下次打磨")
+                      .arg(label).arg(summary).arg(tail));
         } else {
-            setStatus(QStringLiteral("⏹ %1 记录完成（%2 道）— 继续监听，等待下次 RecordOn 触发…")
-                      .arg(res.sealedName).arg(res.sealedPasses));
+            setStatus(QStringLiteral("⏹ %1 记录完成（%2）%3 — 继续监听，等待下次 RecordOn 触发…")
+                      .arg(label).arg(summary).arg(tail));
         }
     }
 }
@@ -1005,20 +1212,26 @@ void MainWindow::onSave() {
     }
 
     QString base = g->name;
-    base.replace(QStringLiteral(".csv"), QString());
+    base = sanitizeFileName(base);
     QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("保存波形数据"), base + QStringLiteral("_saved.csv"),
-        QStringLiteral("CSV 文件 (*.csv);;所有文件 (*.*)"));
+        this, QStringLiteral("保存波形数据"),
+        QDir(todayArchiveDir()).filePath(archiveNameFor(*g) + QStringLiteral(".ecmb")),
+        QStringLiteral("KRLmonitor 曲线 (*.ecmb);;CSV 文件 (*.csv);;所有文件 (*.*)"));
     if (path.isEmpty()) return;
 
     QString err;
-    if (!saveCsv(path, *g, err)) {
+    if (!saveGroupToFile(g, path, err)) {
         QMessageBox::critical(this, QStringLiteral("保存失败"), err);
         return;
     }
-    setStatus(QStringLiteral("✓ 已保存 %1 个点 / %2 道 → %3")
+    if (!path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive)) {
+        g->saved = true;
+        g->savedPath = path;
+    }
+    setStatus(QStringLiteral("✓ 已保存 %1 个点 / %2 道 → %3（%4 KB）")
               .arg(theme::formatThousands(g->len())).arg(g->passes.size())
-              .arg(QFileInfo(path).fileName()));
+              .arg(QFileInfo(path).fileName())
+              .arg(QFileInfo(path).size() / 1024));
 }
 
 void MainWindow::onLoad() {
@@ -1028,8 +1241,8 @@ void MainWindow::onLoad() {
         return;
     }
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, QStringLiteral("选择波形数据文件（可多选）"), QString(),
-        QStringLiteral("CSV 文件 (*.csv);;所有文件 (*.*)"));
+        this, QStringLiteral("选择波形数据文件（可多选）"), todayArchiveDir(),
+        QStringLiteral("KRLmonitor 曲线 (*.ecmb);;CSV 文件 (*.csv);;所有文件 (*.*)"));
     if (paths.isEmpty()) return;
 
     int loaded = 0;
@@ -1040,19 +1253,31 @@ void MainWindow::onLoad() {
                     .arg(MAX_GROUPS).arg(paths.size() - loaded));
             break;
         }
-        CsvData d;
+        DataGroup tmp;
+        EcmFileMeta meta;
         QString err;
-        if (!loadCsv(path, d, err)) {
+        if (!loadGroupFromFile(path, tmp, meta, err)) {
             QMessageBox::critical(this, QStringLiteral("载入失败"),
                                   QFileInfo(path).fileName() + QStringLiteral("\n") + err);
             continue;
         }
-        QString name = QFileInfo(path).fileName();
-        int idx = addGroup(name, d.times, d.pos, d.force, d.passNo, d.esPos, false);
+        QString name = meta.groupName.isEmpty() ? QFileInfo(path).completeBaseName() : meta.groupName;
+        int idx = addGroup(name, tmp.times, tmp.pos, tmp.force, tmp.passNo, tmp.esPos, false);
+        m_groups[idx]->hasEs = tmp.hasEs;
+        m_groups[idx]->incomplete = tmp.incomplete;
+        m_groups[idx]->seam.segments = tmp.seam.segments;
+        m_groups[idx]->seam.seams = tmp.seam.seams;
+        m_groups[idx]->seam.curSeam = 0;
+        m_groups[idx]->seam.curPhase = SeamPhase::None;
+        m_groups[idx]->seam.curCraft = Craft::Unknown;
+        m_groups[idx]->seam.refreshLive();
+        m_groups[idx]->partLabel = meta.partLabel;
+        m_groups[idx]->saved = true;
+        m_groups[idx]->savedPath = path;
         loaded++;
         int npass = m_groups[idx]->passes.size();
         setStatus(QStringLiteral("✓ 已载入 %1 个点%2 ← %3")
-                  .arg(theme::formatThousands(d.times.size()))
+                  .arg(theme::formatThousands(tmp.times.size()))
                   .arg(npass ? QStringLiteral(" / %1 道").arg(npass)
                              : QStringLiteral("（无道次信息，旧格式 CSV）"))
                   .arg(name));
@@ -1084,8 +1309,6 @@ void MainWindow::onClear() {
     m_groups.clear();
     m_chart->setRefGroupIdx(-1);
 
-    m_seamCardsGroup = -2;
-    m_seamCardsSig.clear();
     refreshSeamPanel();
     if (m_seamContext) m_seamContext->setText(QString());
 
@@ -1151,4 +1374,384 @@ void MainWindow::onLockChanged(bool locked, const QString& msg) {
 
 void MainWindow::onStatus(const QString& msg) {
     m_statusLabel->setText(msg);
+}
+
+// ── 拆分视图：阶段 / 工序 过滤 ──────────────────────────────────
+
+void MainWindow::togglePhaseView() {
+    switch (m_phaseView) {
+    case PhaseView::All:        m_phaseView = PhaseView::DetectOnly; break;
+    case PhaseView::DetectOnly: m_phaseView = PhaseView::GrindOnly;  break;
+    case PhaseView::GrindOnly:  m_phaseView = PhaseView::GapOnly;    break;
+    case PhaseView::GapOnly:    m_phaseView = PhaseView::All;        break;
+    }
+    syncToggles();
+    applyViewFilters();
+    setStatus(m_phaseView == PhaseView::All
+                  ? QStringLiteral("阶段过滤：全部（检测 / 打磨 / 间隙）")
+                  : QStringLiteral("阶段过滤：%1").arg(phaseViewLabel(m_phaseView).mid(3)));
+}
+
+void MainWindow::toggleCraftView() {
+    switch (m_craftView) {
+    case CraftView::All:       m_craftView = CraftView::RoughOnly; break;
+    case CraftView::RoughOnly: m_craftView = CraftView::FineOnly;  break;
+    case CraftView::FineOnly:  m_craftView = CraftView::All;       break;
+    }
+    syncToggles();
+    applyViewFilters();
+    setStatus(m_craftView == CraftView::All
+                  ? QStringLiteral("工序过滤：全部")
+                  : QStringLiteral("工序过滤：%1").arg(craftViewLabel(m_craftView).mid(3)));
+}
+
+// ── 件 / 存档 ───────────────────────────────────────────────────
+
+QString MainWindow::todayArchiveDir() const {
+    const QString root = m_arch.dir.isEmpty()
+                             ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                                   + QStringLiteral("/KRLmonitor")
+                             : m_arch.dir;
+    return root + QStringLiteral("/") + QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"));
+}
+
+QString MainWindow::groupDisplayName(const DataGroup& g) const {
+    int first = 0;
+    int last = 0;
+    Craft craft = Craft::Unknown;
+    seamRangeOf(g, &first, &last, &craft);
+    QStringList parts;
+    if (!g.partLabel.isEmpty()) {
+        parts << g.partLabel;
+    }
+    if (craft != Craft::Unknown) {
+        parts << craftLabel(craft);
+    }
+    if (first > 0) {
+        parts << (first == last ? QStringLiteral("S%1").arg(first)
+                                : QStringLiteral("S%1-%2").arg(first).arg(last));
+    }
+    if (parts.isEmpty()) {
+        return g.name;
+    }
+    return parts.join(QStringLiteral(" · "));
+}
+
+QString MainWindow::archiveNameFor(const DataGroup& g) const {
+    int first = 0;
+    int last = 0;
+    Craft craft = Craft::Unknown;
+    seamRangeOf(g, &first, &last, &craft);
+    PartInfo p;
+    p.label = g.partLabel;
+    return buildArchiveName(m_arch.nameTmpl, QDateTime::currentDateTime(), p, craft, first, last);
+}
+
+bool MainWindow::saveGroupToFile(DataGroup* g, const QString& path, QString& err) {
+    if (!g) {
+        err = QStringLiteral("数据组为空");
+        return false;
+    }
+    if (path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive)) {
+        return saveCsv(path, *g, err);        // 兼容旧格式导出（给 Excel / 老工具用）
+    }
+    EcmFileMeta meta;
+    meta.groupName = g->name;
+    meta.partLabel = g->partLabel;
+    meta.partId = m_parts.current().id;
+    meta.incomplete = g->incomplete;
+    EcmSaveOptions opt;
+    opt.compress = m_arch.compress;
+    opt.obfuscate = m_arch.obfuscate;
+    return saveEcm(path, *g, meta, opt, err);
+}
+
+bool MainWindow::loadGroupFromFile(const QString& path, DataGroup& g, EcmFileMeta& meta, QString& err) {
+    if (path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive)) {
+        CsvData d;
+        if (!loadCsv(path, d, err)) {
+            return false;
+        }
+        g.times = d.times;
+        g.pos = d.pos;
+        g.force = d.force;
+        g.passNo = d.passNo;
+        g.esPos = d.esPos;
+        g.passes = computePasses(g.times, g.passNo);
+        rebuildSeamStats(g);
+        for (int v : g.esPos) {
+            if (v != 0) {
+                g.hasEs = true;
+                break;
+            }
+        }
+        meta = EcmFileMeta();
+        meta.groupName = QFileInfo(path).completeBaseName();
+        return true;
+    }
+    return loadEcm(path, g, meta, err);
+}
+
+bool MainWindow::autoArchiveGroup(DataGroup* g) {
+    if (!g || !m_arch.autoSave || g->times.isEmpty()) {
+        return false;
+    }
+    const QString dir = todayArchiveDir();
+    QDir d(dir);
+    if (!d.exists() && !d.mkpath(QStringLiteral("."))) {
+        setStatus(QStringLiteral("⚠ 自动存档失败：无法创建目录 %1").arg(dir));
+        return false;
+    }
+    QString base = archiveNameFor(*g);
+    if (base.isEmpty()) {
+        base = QStringLiteral("未命名");
+    }
+    QString path = dir + QStringLiteral("/") + base + QStringLiteral(".ecmb");
+    int n = 2;
+    while (QFile::exists(path)) {
+        path = dir + QStringLiteral("/") + base + QStringLiteral("-%1.ecmb").arg(n++);
+    }
+    QString err;
+    if (!saveGroupToFile(g, path, err)) {
+        // 存档失败绝不丢数据：只在状态栏明确报错
+        setStatus(QStringLiteral("⚠ 自动存档失败：%1（数据仍在内存中，可点\"保存\"手工导出）").arg(err));
+        return false;
+    }
+    g->saved = true;
+    g->savedPath = path;
+    return true;
+}
+
+void MainWindow::enforceMemoryPolicy() {
+    const int keep = qMax(1, m_arch.keepGroups);
+    while (m_groups.size() > keep) {
+        int victim = -1;
+        for (int i = 0; i < m_groups.size(); ++i) {
+            const DataGroup* g = m_groups[i];
+            if (g->saved && !g->live) {     // 只回收"已经落盘"的组
+                victim = i;
+                break;
+            }
+        }
+        if (victim < 0) {
+            break;      // 没有可回收的：宁可多占内存，也不丢没落盘的数据
+        }
+        const QString name = m_groups[victim]->name;
+        removeGroup(victim);
+        setStatus(QStringLiteral("♻ 已落盘并回收内存：%1（可在存档目录重新载入）").arg(name));
+    }
+}
+
+void MainWindow::onNewPart() {
+    m_parts.startNewPart(QDateTime::currentDateTime());
+    setStatus(QStringLiteral("✂ 已手工切分：下一组数据记为 %1").arg(m_parts.current().label));
+}
+
+void MainWindow::onServerDisconnected() {
+    // 断线必须封住当前周期：否则重连后 RecordOn 已经是 TRUE，
+    // 下一件的数据会被并进上一件那一组（时间轴错乱、焊缝统计串台）。
+    TickResult res;
+    if (m_recorder->forceSeal(res)) {
+        if (res.sealedGroup) {
+            res.sealedGroup->partLabel = m_parts.current().label;
+            const QString display = groupDisplayName(*res.sealedGroup);
+            if (!display.isEmpty()) {
+                res.sealedGroup->name = display;
+            }
+            autoArchiveGroup(res.sealedGroup);
+        }
+        m_parts.onCycleEnd(QDateTime::currentDateTime());
+        enforceMemoryPolicy();
+        refreshGroupsPanel();
+        refreshSeamPanel();
+        m_chart->update();
+        setStatus(QStringLiteral("⚠ KUKA 断线：已强制封存当前周期（标记为可能不完整）"));
+    }
+}
+
+void MainWindow::seedPartSeqFromArchive() {
+    const QDir d(todayArchiveDir());
+    if (!d.exists()) {
+        return;
+    }
+    // 只用于"续号"：取当日已归档的组数作为起始序号（宁可偏大，重名由 -2/-3 兜底）
+    const int n = d.entryList(QStringList{QStringLiteral("*.ecmb")}, QDir::Files).size();
+    if (n > 0) {
+        m_parts.setStartSeq(n);
+    }
+}
+
+// ── 设置 ────────────────────────────────────────────────────────
+
+void MainWindow::loadSettings() {
+    QSettings s(QSettings::IniFormat, QSettings::UserScope,
+                QStringLiteral("KRLmonitor"), QStringLiteral("settings"));
+    m_arch.dir = s.value(QStringLiteral("archive/dir")).toString();
+    m_arch.nameTmpl = s.value(QStringLiteral("archive/nameTmpl"),
+                              QString::fromLatin1(ARCHIVE_NAME_TMPL)).toString();
+    m_arch.autoSave = s.value(QStringLiteral("archive/autoSave"), AUTO_SAVE_DEFAULT).toBool();
+    m_arch.compress = s.value(QStringLiteral("archive/compress"), ARCHIVE_COMPRESS_DEFAULT).toBool();
+    m_arch.obfuscate = s.value(QStringLiteral("archive/obfuscate"), ARCHIVE_OBFUSCATE_DEFAULT).toBool();
+    m_arch.keepGroups = s.value(QStringLiteral("view/keepGroups"), KEEP_GROUPS_DEFAULT).toInt();
+    m_arch.timeoutMin = s.value(QStringLiteral("part/timeoutMin"), PART_TIMEOUT_MIN_DEFAULT).toInt();
+    m_arch.autoArm = s.value(QStringLiteral("run/autoArm"), true).toBool();
+    m_arch.rule = PartRule(s.value(QStringLiteral("part/rule"), int(PartRule::PerCycle)).toInt());
+}
+
+void MainWindow::saveSettings() {
+    QSettings s(QSettings::IniFormat, QSettings::UserScope,
+                QStringLiteral("KRLmonitor"), QStringLiteral("settings"));
+    s.setValue(QStringLiteral("archive/dir"), m_arch.dir);
+    s.setValue(QStringLiteral("archive/nameTmpl"), m_arch.nameTmpl);
+    s.setValue(QStringLiteral("archive/autoSave"), m_arch.autoSave);
+    s.setValue(QStringLiteral("archive/compress"), m_arch.compress);
+    s.setValue(QStringLiteral("archive/obfuscate"), m_arch.obfuscate);
+    s.setValue(QStringLiteral("view/keepGroups"), m_arch.keepGroups);
+    s.setValue(QStringLiteral("part/timeoutMin"), m_arch.timeoutMin);
+    s.setValue(QStringLiteral("part/rule"), int(m_arch.rule));
+    s.setValue(QStringLiteral("run/autoArm"), m_arch.autoArm);
+    s.sync();
+}
+
+// 连接指示灯：把"是否在监听 / KUKA 是否连上 / 本机 IP 是多少"三件事常驻在工具栏右侧。
+// 这三者正好是 ECMMonitor 通讯排查的第一步（XML 里的 <IP> 必须等于这里的本机地址）。
+void MainWindow::refreshLocalIps() {
+    QStringList ips;
+    const QList<QHostAddress> addrs = QNetworkInterface::allAddresses();
+    for (const QHostAddress& a : addrs) {
+        if (a.protocol() != QAbstractSocket::IPv4Protocol) {
+            continue;
+        }
+        const QString s = a.toString();
+        if (s.startsWith(QLatin1String("127.")) || s.startsWith(QLatin1String("169.254."))) {
+            continue;   // 回环 / 自动私有地址不算
+        }
+        ips << s;
+    }
+    m_localIps = ips.isEmpty() ? QStringLiteral("(未取到本机 IP)") : ips.join(QStringLiteral(" / "));
+}
+
+// 启动日志：把"监听结果 / 本机 IP / 关键配置"落到文件里。
+// 现场的典型问题是"程序看着在跑，其实没在监听"或"监听了但 IP 和 XML 不一致"，
+// 这两种都能从这一行日志直接判断出来。
+void MainWindow::writeStartupLog() {
+    const QString line =
+        QStringLiteral("[%1] exe=%2 listen=%3 err=%4 ips=%5 keepGroups=%6 rule=%7 autoArm=%8 autoSave=%9\n")
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+                 QCoreApplication::applicationFilePath(),
+                 m_listenOk ? QStringLiteral("OK") : QStringLiteral("FAIL"),
+                 m_server ? (m_server->lastError().isEmpty() ? QStringLiteral("-") : m_server->lastError())
+                          : QStringLiteral("-"),
+                 m_localIps)
+            .arg(m_arch.keepGroups)
+            .arg(int(m_arch.rule))
+            .arg(m_arch.autoArm ? 1 : 0)
+            .arg(m_arch.autoSave ? 1 : 0);
+
+    // 优先写在 exe 旁边（现场最容易找到）；不行再退回存档目录
+    const QStringList dirs{QCoreApplication::applicationDirPath(), todayArchiveDir()};
+    for (const QString& d : dirs) {
+        QDir dir(d);
+        if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+            continue;
+        }
+        QFile f(dir.filePath(QStringLiteral("KRLmonitor.log")));
+        if (f.open(QIODevice::Append | QIODevice::Text)) {
+            f.write(line.toUtf8());
+            f.close();
+            break;
+        }
+    }
+}
+
+void MainWindow::refreshLinkLabel() {
+    if (!m_linkLabel) {
+        return;
+    }
+    QString txt;
+    QColor c = theme::C_DIM;
+    if (!m_listenOk) {
+        txt = QStringLiteral("🔌 端口 %1 ✗ 监听失败").arg(LISTEN_PORT);
+        c = theme::C_REC;
+    } else if (m_server && m_server->hasClient()) {
+        txt = QStringLiteral("🔌 端口 %1 ● KUKA 已连接").arg(LISTEN_PORT);
+        c = theme::C_OK;
+    } else {
+        txt = QStringLiteral("🔌 端口 %1 ○ 等待 KUKA 连接　本机 %2").arg(LISTEN_PORT).arg(m_localIps);
+        c = theme::C_WARN_HI;
+    }
+    m_linkLabel->setText(txt);
+    m_linkLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;").arg(c.name()));
+    m_linkLabel->setToolTip(QStringLiteral(
+        "KUKA 控制器上 EthernetKRL\\ECMMonitor\\config.xml 里的 <IP> 必须等于这里显示的本机地址，"
+        "<PORT> 必须是 %1。\n若此处显示「监听失败」，说明端口被占用或权限被拦。").arg(LISTEN_PORT));
+}
+
+void MainWindow::onSettings() {
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("设置"));
+    dlg.setStyleSheet(QStringLiteral("background-color:%1;color:%2;")
+                      .arg(theme::PANEL.name(), theme::C_TEXT.name()));
+    auto* form = new QFormLayout(&dlg);
+
+    auto* dir = new QLineEdit(m_arch.dir.isEmpty()
+                                  ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                                        + QStringLiteral("/KRLmonitor")
+                                  : m_arch.dir,
+                              &dlg);
+    form->addRow(QStringLiteral("存档目录"), dir);
+    auto* tmpl = new QLineEdit(m_arch.nameTmpl, &dlg);
+    tmpl->setToolTip(QStringLiteral("占位符：{time} 到分钟、{date}、{part}、{craft}、{seams}"));
+    form->addRow(QStringLiteral("文件名模板"), tmpl);
+    auto* keep = new QSpinBox(&dlg);
+    keep->setRange(1, MAX_GROUPS);
+    keep->setValue(m_arch.keepGroups);
+    keep->setToolTip(QStringLiteral("内存里保留多少组；更早的组落盘后自动回收"));
+    form->addRow(QStringLiteral("内存保留组数"), keep);
+
+    auto* rule = new QComboBox(&dlg);
+    rule->addItem(QStringLiteral("一次程序运行 = 一件（推荐）"), int(PartRule::PerCycle));
+    rule->addItem(QStringLiteral("细磨回到粗磨 = 新件"), int(PartRule::CraftRestart));
+    rule->addItem(QStringLiteral("焊缝号回绕 = 新件"), int(PartRule::SeamWrap));
+    rule->setCurrentIndex(qMax(0, rule->findData(int(m_arch.rule))));
+    form->addRow(QStringLiteral("分件规则"), rule);
+    auto* timeout = new QSpinBox(&dlg);
+    timeout->setRange(0, 600);
+    timeout->setValue(m_arch.timeoutMin);
+    timeout->setToolTip(QStringLiteral("超过这么久没有数据就视为新的一件（0 = 关闭）"));
+    form->addRow(QStringLiteral("超时切分（分钟）"), timeout);
+
+    auto* autoSave = new QCheckBox(QStringLiteral("每个周期封组后自动存档"), &dlg);
+    autoSave->setChecked(m_arch.autoSave);
+    form->addRow(QString(), autoSave);
+    auto* compress = new QCheckBox(QStringLiteral("压缩（体积约为 CSV 的 1/10）"), &dlg);
+    compress->setChecked(m_arch.compress);
+    form->addRow(QString(), compress);
+    auto* obf = new QCheckBox(QStringLiteral("混淆（只有本软件能读）"), &dlg);
+    obf->setChecked(m_arch.obfuscate);
+    form->addRow(QString(), obf);
+    auto* autoArm = new QCheckBox(QStringLiteral("打开程序即开始监听"), &dlg);
+    autoArm->setChecked(m_arch.autoArm);
+    form->addRow(QString(), autoArm);
+
+    auto* ok = new QPushButton(QStringLiteral("确定"), &dlg);
+    connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+    form->addRow(QString(), ok);
+
+    if (dlg.exec() != QDialog::Accepted) {
+        return;
+    }
+    m_arch.dir = dir->text().trimmed();
+    m_arch.nameTmpl = tmpl->text().trimmed();
+    m_arch.keepGroups = keep->value();
+    m_arch.rule = PartRule(rule->currentData().toInt());
+    m_arch.timeoutMin = timeout->value();
+    m_arch.autoSave = autoSave->isChecked();
+    m_arch.compress = compress->isChecked();
+    m_arch.obfuscate = obf->isChecked();
+    m_arch.autoArm = autoArm->isChecked();
+    m_parts.configure(m_arch.rule, m_arch.timeoutMin);
+    saveSettings();
+    enforceMemoryPolicy();
+    setStatus(QStringLiteral("✓ 设置已保存（存档目录：%1）").arg(todayArchiveDir()));
 }

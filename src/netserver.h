@@ -23,6 +23,13 @@ public:
 
     bool startListen(quint16 port, const QHostAddress& host = QHostAddress::AnyIPv4);
 
+    // 监听是否成功（失败时 startListen 返回 false，这里也能查）
+    bool listening() const { return m_listening; }
+    QString lastError() const { return m_lastError; }
+    quint16 port() const { return m_port; }
+    // 当前是否有 KUKA 连着（用于界面上的连接指示灯）
+    bool hasClient() const { return !m_sockets.isEmpty(); }
+
     void setArmed(bool v) { m_armed = v; }
     bool armed() const { return m_armed; }
     void drain() { m_queue.clear(); }
@@ -31,6 +38,10 @@ public:
 
 signals:
     void statusChanged(const QString& msg);
+    // 连接状态变化（true = 有客户端接入）
+    void clientChanged(bool connected);
+    // 连接断开：记录层必须借此封住当前周期，否则重连后两件数据会被并成一组
+    void disconnected();
 
 private slots:
     void onNewConnection();
@@ -46,5 +57,8 @@ private:
     QHash<QTcpSocket*, QByteArray> m_buffers;
     QQueue<Sample> m_queue;
     bool m_armed = false;
+    bool m_listening = false;
+    QString m_lastError;
+    quint16 m_port = 0;
     QElapsedTimer m_clock;
 };

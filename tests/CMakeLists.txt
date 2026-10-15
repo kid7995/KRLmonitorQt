@@ -5,12 +5,15 @@ set(KRLMONITOR_TEST_CORE_SOURCES
     ${PROJECT_SOURCE_DIR}/src/decimate.cpp
     ${PROJECT_SOURCE_DIR}/src/csvio.cpp
     ${PROJECT_SOURCE_DIR}/src/recorder.cpp
+    ${PROJECT_SOURCE_DIR}/src/part.cpp
+    ${PROJECT_SOURCE_DIR}/src/ecmfile.cpp
 )
 
 add_library(KRLmonitorTestCore STATIC ${KRLMONITOR_TEST_CORE_SOURCES})
 target_include_directories(KRLmonitorTestCore PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(KRLmonitorTestCore PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Gui
 )
 
 function(add_krlmonitor_test test_name)
@@ -32,3 +35,6 @@ add_krlmonitor_test(tst_decimate tst_decimate.cpp)
 add_krlmonitor_test(tst_csvio tst_csvio.cpp)
 add_krlmonitor_test(tst_recorder tst_recorder.cpp)
 add_krlmonitor_test(tst_station tst_station.cpp)
+add_krlmonitor_test(tst_part tst_part.cpp)
+add_krlmonitor_test(tst_ecmfile tst_ecmfile.cpp)
+add_krlmonitor_test(tst_theme tst_theme.cpp)

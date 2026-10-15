@@ -35,6 +35,10 @@ set(PROJECT_SOURCES
         src/station.h
         src/model.cpp
         src/model.h
+        src/part.cpp
+        src/part.h
+        src/ecmfile.cpp
+        src/ecmfile.h
         src/decimate.cpp
         src/decimate.h
         src/config.h
