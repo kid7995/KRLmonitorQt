@@ -163,6 +163,7 @@ private:
     QDockWidget* m_dockDetail = nullptr;    // 🔍 详情
     QDockWidget* m_dockLog = nullptr;       // 📝 日志（默认隐藏）
     QToolBar* m_chartBar = nullptr;         // 图表工具条
+    QMenu* m_panelMenu = nullptr;           // 工具条上的"面板"下拉（各面板显隐）
     QPlainTextEdit* m_logView = nullptr;
     QLabel* m_linkPanel = nullptr;          // 链路状态面板里的多行详情
     QPushButton* m_btnStart = nullptr;

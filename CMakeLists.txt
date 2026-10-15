@@ -41,6 +41,10 @@ set(PROJECT_SOURCES
         src/ecmfile.h
         src/decimate.cpp
         src/decimate.h
+        src/icons.cpp
+        src/icons.h
+        src/uistyle.cpp
+        src/uistyle.h
         src/config.h
         src/theme.h
 )

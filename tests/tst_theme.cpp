@@ -27,7 +27,8 @@ void ThemeTest::paletteIndexAlwaysStaysInsideTheArray() {
         QVERIFY2(&p >= begin && &p <= end,
                  qPrintable(QStringLiteral("paletteOf(%1) 返回了数组外的对象").arg(i)));
     }
-    QCOMPARE(theme::PALETTE_COUNT, 4);
+    // 多组对比是常态：2026-10-15 把配色从 4 组扩到 6 组（白底上都能分辨的中饱和色）
+    QCOMPARE(theme::PALETTE_COUNT, 6);
 }
 
 void ThemeTest::paletteIndexCoversEveryGroupWeMayKeepInMemory() {

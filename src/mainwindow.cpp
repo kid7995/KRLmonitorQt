@@ -40,6 +40,7 @@
 
 #include "theme.h"
 #include "config.h"
+#include "icons.h"
 #include "chartview.h"
 #include "netserver.h"
 #include "csvio.h"
@@ -49,7 +50,7 @@
 namespace {
 
 // 面板布局的版本号：以后增删停靠面板时把它 +1，旧布局会自动失效回默认
-constexpr int kDockStateVersion = 1;
+constexpr int kDockStateVersion = 2;
 
 // 一组的"焊缝范围 + 工序"：用于组名与存档文件名
 void seamRangeOf(const DataGroup& g, int* first, int* last, Craft* craft) {
@@ -94,16 +95,23 @@ QString craftViewLabel(CraftView v) {
     return QStringLiteral("工序：全部");
 }
 
-QPushButton* makeBtn(const QString& text, const QColor& bg, const QColor& bgHi,
-                     const QColor& fg = QColor(Qt::white), const QColor& fgHi = QColor(Qt::white)) {
+// 按钮权重：具体样式全部由 uistyle 的全局 QSS 按属性定义，这里只打标记
+enum class BtnKind { Primary, Warn, Danger, Ghost };
+
+QPushButton* makeBtn(const QString& text, BtnKind kind = BtnKind::Ghost,
+                     const QString& icon = QString(), const QColor& iconColor = QColor()) {
     auto* b = new QPushButton(text);
     b->setCursor(Qt::PointingHandCursor);
-    b->setStyleSheet(QString(
-        "QPushButton{background-color:%1;color:%2;border:none;padding:7px 14px;font-weight:bold;font-size:11pt;}"
-        "QPushButton:hover{background-color:%3;color:%4;}"
-        "QPushButton:disabled{background-color:%5;color:%6;}")
-        .arg(bg.name(), fg.name(), bgHi.name(), fgHi.name(),
-             theme::BORDER.name(), theme::C_DIM.name()));
+    switch (kind) {
+    case BtnKind::Primary: b->setProperty("btn", "primary"); break;
+    case BtnKind::Warn:    b->setProperty("btn", "warn");    break;
+    case BtnKind::Danger:  b->setProperty("btn", "danger");  break;
+    case BtnKind::Ghost:   b->setProperty("btn", "ghost");   break;
+    }
+    if (!icon.isEmpty()) {
+        b->setIcon(icons::get(icon, iconColor));
+        b->setIconSize(QSize(16, 16));
+    }
     return b;
 }
 
@@ -116,51 +124,31 @@ QWidget* vSeparator() {
 }
 
 void styleToggle(QPushButton* btn, bool on, const QString& label) {
-    if (on) {
-        btn->setText(label + QStringLiteral(" ✓"));
-        btn->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:white;border:none;padding:6px 10px;font-weight:bold;font-size:10pt;}"
-            "QPushButton:hover{background-color:%2;}")
-            .arg(theme::C_INFO.name(), theme::C_INFO_HI.name()));
-    } else {
-        btn->setText(label + QStringLiteral(" ✗"));
-        btn->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:%2;border:none;padding:6px 10px;font-weight:bold;font-size:10pt;}"
-            "QPushButton:hover{background-color:%3;color:%4;}")
-            .arg(theme::BORDER.name(), theme::C_DIM.name(),
-                 theme::C_HOVER.name(), theme::C_TEXT.name()));
-    }
+    // 选中态交给 QSS 的 :checked 规则（强调色描边 + 浅底），不再用 ✓/✗ 字符
+    btn->setCheckable(true);
+    btn->setText(label);
+    btn->setChecked(on);
 }
 
-void stylePosButton(QPushButton* b, DataGroup* g) {
+// 组卡片上的 PosR / ForceR 开关：用该组配色做浅底 + 同色字
+void styleGroupToggle(QPushButton* b, DataGroup* g, bool isPos) {
     const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
-    if (g->showPos) {
-        b->setText(QStringLiteral("● PosR ✓"));
-        b->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:%2;border:none;font-weight:bold;font-size:9pt;padding:3px 8px;}")
-            .arg(pal.bgPos.name(), pal.pos.name()));
-    } else {
-        b->setText(QStringLiteral("○ PosR ✗"));
-        b->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:%2;border:none;font-weight:bold;font-size:9pt;padding:3px 8px;}")
-            .arg(theme::BORDER.name(), theme::C_DIM.name()));
-    }
+    const bool on = isPos ? g->showPos : g->showForce;
+    const QColor fg = isPos ? pal.pos : pal.force;
+    const QColor bg = isPos ? pal.bgPos : pal.bgForce;
+    b->setText(isPos ? QStringLiteral("PosR") : QStringLiteral("ForceR"));
+    b->setStyleSheet(on
+        ? QStringLiteral("QPushButton{background:%1;color:%2;border:1px solid %2;border-radius:4px;"
+                         "padding:3px 10px;font-size:8pt;font-weight:600;}")
+              .arg(bg.name(), fg.name())
+        : QStringLiteral("QPushButton{background:transparent;color:%1;border:1px solid %2;"
+                         "border-radius:4px;padding:3px 10px;font-size:8pt;}"
+                         "QPushButton:hover{background:%3;}")
+              .arg(theme::C_DIM.name(), theme::BORDER.name(), theme::C_HOVER.name()));
 }
 
-void styleForceButton(QPushButton* b, DataGroup* g) {
-    const theme::Palette& pal = theme::paletteOf(g->paletteIdx);
-    if (g->showForce) {
-        b->setText(QStringLiteral("● ForceR ✓"));
-        b->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:%2;border:none;font-weight:bold;font-size:9pt;padding:3px 8px;}")
-            .arg(pal.bgForce.name(), pal.force.name()));
-    } else {
-        b->setText(QStringLiteral("○ ForceR ✗"));
-        b->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:%2;border:none;font-weight:bold;font-size:9pt;padding:3px 8px;}")
-            .arg(theme::BORDER.name(), theme::C_DIM.name()));
-    }
-}
+void stylePosButton(QPushButton* b, DataGroup* g)   { styleGroupToggle(b, g, true); }
+void styleForceButton(QPushButton* b, DataGroup* g) { styleGroupToggle(b, g, false); }
 
 int pickGroupDialog(QWidget* parent, const QVector<DataGroup*>& groups, const QString& title) {
     QDialog dlg(parent);
@@ -329,54 +317,68 @@ void MainWindow::buildMainToolBar() {
         "QToolBar::separator{background-color:%2;width:1px;margin:4px 8px;}")
         .arg(theme::PANEL.name(), theme::BORDER.name()));
 
-    m_btnStart = makeBtn(QStringLiteral("▶ 开始监听"), theme::C_OK, theme::C_OK_HI);
+    m_btnStart = makeBtn(QStringLiteral("开始监听"), BtnKind::Primary,
+                         QStringLiteral("play"), QColor(Qt::white));
     m_btnStart->setToolTip(QStringLiteral("开始/继续监听（F5）"));
     connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStart);
     tb->addWidget(m_btnStart);
 
-    m_btnPause = makeBtn(QStringLiteral("⏸ 暂停"), theme::C_WARN, theme::C_WARN_HI);
+    m_btnPause = makeBtn(QStringLiteral("暂停"), BtnKind::Ghost,
+                         QStringLiteral("pause"), theme::C_WARN);
     m_btnPause->setEnabled(false);
     m_btnPause->setToolTip(QStringLiteral("暂停 / 继续（F6）"));
     connect(m_btnPause, &QPushButton::clicked, this, &MainWindow::onPause);
     tb->addWidget(m_btnPause);
 
-    m_btnAutoPause = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    m_btnAutoPause = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("stop"));
+    m_btnAutoPause->setToolTip(QStringLiteral("打磨完成后自动冻结暂停"));
     connect(m_btnAutoPause, &QPushButton::clicked, this, &MainWindow::toggleAutoPause);
     tb->addWidget(m_btnAutoPause);
 
     tb->addSeparator();
 
-    auto* btnSave = makeBtn(QStringLiteral("💾 保存"), theme::C_INFO, theme::C_INFO_HI);
+    auto* btnSave = makeBtn(QStringLiteral("保存"), BtnKind::Ghost,
+                            QStringLiteral("save"), theme::C_INFO);
     btnSave->setToolTip(QStringLiteral("保存当前数据组（Ctrl+S）"));
     connect(btnSave, &QPushButton::clicked, this, &MainWindow::onSave);
     tb->addWidget(btnSave);
 
-    auto* btnLoad = makeBtn(QStringLiteral("➕ 添加数据组"), theme::C_PURPLE, theme::C_PURPLE_HI);
+    auto* btnLoad = makeBtn(QStringLiteral("添加组"), BtnKind::Ghost,
+                            QStringLiteral("open"), theme::C_PURPLE);
     btnLoad->setToolTip(QStringLiteral("载入 .ecmb / CSV 作为对比组（Ctrl+O）"));
     connect(btnLoad, &QPushButton::clicked, this, &MainWindow::onLoad);
     tb->addWidget(btnLoad);
-
-    auto* btnClear = makeBtn(QStringLiteral("✕ 清除全部"), theme::BORDER, theme::C_HOVER,
-                             theme::C_DIM, theme::C_TEXT);
-    connect(btnClear, &QPushButton::clicked, this, &MainWindow::onClear);
-    tb->addWidget(btnClear);
-
-    tb->addSeparator();
-
-    auto* btnNewPart = makeBtn(QStringLiteral("✂ 新件"), theme::C_WARN, theme::C_WARN_HI);
-    btnNewPart->setToolTip(QStringLiteral("手工切分：下一组数据算作新的一件（Ctrl+N）"));
-    connect(btnNewPart, &QPushButton::clicked, this, &MainWindow::onNewPart);
-    tb->addWidget(btnNewPart);
-
-    auto* btnSettings = makeBtn(QStringLiteral("⛭ 设置"), theme::BORDER, theme::C_HOVER,
-                                theme::C_DIM, theme::C_TEXT);
-    connect(btnSettings, &QPushButton::clicked, this, &MainWindow::onSettings);
-    tb->addWidget(btnSettings);
 
     tb->addSeparator();
 
     // 视图：缩放模式 + 阶段/工序过滤（叠道/ESpos/道次分割在图表工具条上另行分组见 S2）
     buildZoomControls();
+
+    tb->addSeparator();
+
+    // ── 收纳：面板显隐 + 低频命令收进"更多"菜单 ──────────────
+    auto* btnPanels = makeBtn(QStringLiteral("面板"), BtnKind::Ghost, QStringLiteral("panels"));
+    btnPanels->setToolTip(QStringLiteral("显示/隐藏停靠面板（Ctrl+1~6）"));
+    auto* panelMenu = new QMenu(btnPanels);
+    btnPanels->setMenu(panelMenu);
+    m_panelMenu = panelMenu;        // buildDocks() 里补上各面板的 toggleViewAction
+    tb->addWidget(btnPanels);
+
+    auto* btnMore = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("more"));
+    btnMore->setToolTip(QStringLiteral("更多命令"));
+    auto* moreMenu = new QMenu(btnMore);
+    btnMore->setMenu(moreMenu);
+    QAction* a = moreMenu->addAction(QStringLiteral("✂ 新件（手工切分）"));
+    a->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
+    connect(a, &QAction::triggered, this, &MainWindow::onNewPart);
+    a = moreMenu->addAction(QStringLiteral("↺ 重置视图"));
+    connect(a, &QAction::triggered, this, [this]() { if (m_chart) m_chart->resetView(); });
+    moreMenu->addSeparator();
+    a = moreMenu->addAction(QStringLiteral("✕ 清除全部数据组"));
+    connect(a, &QAction::triggered, this, &MainWindow::onClear);
+    a = moreMenu->addAction(QStringLiteral("⛭ 设置…"));
+    connect(a, &QAction::triggered, this, &MainWindow::onSettings);
+    tb->addWidget(btnMore);
 
     // 右侧留空：状态信息统一放到状态栏，工具条不再被状态文字挤动
     auto* spacer = new QWidget(tb);
@@ -417,11 +419,11 @@ QWidget* MainWindow::buildZoomControls() {
 
     h->addWidget(vSeparator());
 
-    m_btnPhase = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    m_btnPhase = makeBtn(QString(), BtnKind::Ghost);
     connect(m_btnPhase, &QPushButton::clicked, this, &MainWindow::togglePhaseView);
     h->addWidget(m_btnPhase);
 
-    m_btnCraft = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    m_btnCraft = makeBtn(QString(), BtnKind::Ghost);
     connect(m_btnCraft, &QPushButton::clicked, this, &MainWindow::toggleCraftView);
     h->addWidget(m_btnCraft);
 
@@ -541,15 +543,9 @@ QWidget* MainWindow::buildSeamPanel() {
     }
 
     auto* btnRow = new QHBoxLayout();
-    auto* btnAll = new QPushButton(QStringLiteral("全选"), m_seamWidget);
+    auto* btnAll = makeBtn(QStringLiteral("全选"), BtnKind::Ghost);
     btnAll->setToolTip(QStringLiteral("突出全部焊缝（视觉上等同正常显示）"));
-    btnAll->setCursor(Qt::PointingHandCursor);
-    btnAll->setFixedHeight(24);
-    btnAll->setStyleSheet(QString(
-        "QPushButton{background-color:%1;color:%2;border:none;padding:0 8px;font-size:9pt;}"
-        "QPushButton:hover{background-color:%3;color:%4;}")
-        .arg(theme::BORDER.name(), theme::C_DIM.name(),
-             theme::C_HOVER.name(), theme::C_TEXT.name()));
+    btnAll->setFixedHeight(26);
     connect(btnAll, &QPushButton::clicked, this, [this]() {
         for (int k = 1; k <= SEAM_COUNT_MAX; ++k) m_seamSel.insert(k);
         refreshSeamChips();
@@ -557,11 +553,9 @@ QWidget* MainWindow::buildSeamPanel() {
     });
     btnRow->addWidget(btnAll);
 
-    auto* btnNone = new QPushButton(QStringLiteral("取消突出"), m_seamWidget);
+    auto* btnNone = makeBtn(QStringLiteral("取消突出"), BtnKind::Ghost);
     btnNone->setToolTip(QStringLiteral("清除突出显示，恢复全部正常显示"));
-    btnNone->setCursor(Qt::PointingHandCursor);
-    btnNone->setFixedHeight(24);
-    btnNone->setStyleSheet(btnAll->styleSheet());
+    btnNone->setFixedHeight(26);
     connect(btnNone, &QPushButton::clicked, this, [this]() {
         m_seamSel.clear();
         refreshSeamChips();
@@ -652,17 +646,19 @@ void MainWindow::refreshSeamChips() {
         b->setText(txt);
         b->setChecked(sel);
 
-        QString bg = theme::BORDER.name();
+        QString bg = theme::PANEL.name();
         QString fg = theme::C_DIM.name();
+        QString border = theme::BORDER.name();
         if (has) {
-            bg = sel ? accent.name() : theme::BG.name();
+            bg = sel ? accent.name() : theme::PANEL.name();
             fg = sel ? QStringLiteral("#ffffff") : accent.name();
+            border = sel ? accent.name() : theme::BORDER.name();
         }
-        const QString border = liveNow ? theme::C_REC.name() : theme::BORDER.name();
+        const QString bd = liveNow ? theme::C_REC.name() : border;
         b->setStyleSheet(QString(
-            "QPushButton{background-color:%1;color:%2;border:2px solid %3;"
-            "border-radius:4px;font-weight:bold;font-size:9pt;padding:0;}")
-            .arg(bg, fg, border));
+            "QPushButton{background-color:%1;color:%2;border:1px solid %3;"
+            "border-radius:5px;font-weight:600;font-size:9pt;padding:0;}")
+            .arg(bg, fg, bd));
     }
 }
 
@@ -823,15 +819,15 @@ void MainWindow::buildChartArea() {
     });
     m_chartBar->addSeparator();
 
-    m_btnSeg = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    m_btnSeg = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("grid"));
     connect(m_btnSeg, &QPushButton::clicked, this, &MainWindow::toggleSegments);
     m_chartBar->addWidget(m_btnSeg);
 
-    m_btnOverlay = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    m_btnOverlay = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("layers"));
     connect(m_btnOverlay, &QPushButton::clicked, this, &MainWindow::toggleOverlay);
     m_chartBar->addWidget(m_btnOverlay);
 
-    m_btnEsPos = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    m_btnEsPos = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("step"));
     connect(m_btnEsPos, &QPushButton::clicked, this, &MainWindow::toggleEsPos);
     m_chartBar->addWidget(m_btnEsPos);
 
@@ -867,10 +863,7 @@ QDockWidget* MainWindow::makeDock(const QString& title, QWidget* content, const 
     d->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
     d->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
                    | QDockWidget::DockWidgetClosable);
-    d->setStyleSheet(QStringLiteral(
-        "QDockWidget{color:%1;titlebar-close-icon:none;}"
-        "QDockWidget::title{background-color:%2;padding:5px 8px;font-weight:bold;font-size:10pt;}")
-        .arg(theme::C_TEXT.name(), theme::PANEL.name()));
+    // 标题栏样式由 uistyle 的全局 QSS 统一负责（这样主题只有一处定义）
     return d;
 }
 
@@ -893,22 +886,37 @@ void MainWindow::buildDocks() {
     // 默认列宽/高度分配放在事件循环启动后做（构造期设置会被首次布局覆盖），
     // 有保存过的布局时由 restoreUiState() 优先恢复。
 
-    // 视图菜单：面板显隐（QDockWidget 自带 toggleViewAction）+ 恢复默认布局
+    // 面板显隐：同时挂到"视图"菜单和工具条上的"面板"下拉（QDockWidget 自带 toggleViewAction）
+    const struct { QDockWidget* dock; const char* key; const char* icon; } items[] = {
+        {m_dockLink,   "Ctrl+1", "link"},
+        {m_dockGroups, "Ctrl+2", "panels"},
+        {m_dockSeams,  "Ctrl+3", "values"},
+        {m_dockValues, "Ctrl+4", "values"},
+        {m_dockDetail, "Ctrl+5", "detail"},
+        {m_dockLog,    "Ctrl+6", "log"},
+    };
+    for (const auto& it : items) {
+        QAction* a = it.dock->toggleViewAction();
+        a->setShortcut(QKeySequence(QLatin1String(it.key)));
+        a->setIcon(icons::get(QLatin1String(it.icon), theme::C_INFO));
+        if (m_viewMenu) {
+            m_viewMenu->addAction(a);
+        }
+        if (m_panelMenu) {
+            m_panelMenu->addAction(a);
+        }
+    }
     if (m_viewMenu) {
-        QAction* a = m_dockLink->toggleViewAction();   a->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
-        m_viewMenu->addAction(a);
-        a = m_dockGroups->toggleViewAction();          a->setShortcut(QKeySequence(QStringLiteral("Ctrl+2")));
-        m_viewMenu->addAction(a);
-        a = m_dockSeams->toggleViewAction();           a->setShortcut(QKeySequence(QStringLiteral("Ctrl+3")));
-        m_viewMenu->addAction(a);
-        a = m_dockValues->toggleViewAction();          a->setShortcut(QKeySequence(QStringLiteral("Ctrl+4")));
-        m_viewMenu->addAction(a);
-        a = m_dockDetail->toggleViewAction();          a->setShortcut(QKeySequence(QStringLiteral("Ctrl+5")));
-        m_viewMenu->addAction(a);
-        a = m_dockLog->toggleViewAction();             a->setShortcut(QKeySequence(QStringLiteral("Ctrl+6")));
-        m_viewMenu->addAction(a);
         m_viewMenu->addSeparator();
-        auto* actDefault = m_viewMenu->addAction(QStringLiteral("恢复默认布局"));
+    }
+    if (m_panelMenu) {
+        m_panelMenu->addSeparator();
+    }
+    auto addDefaultLayoutAction = [this](QMenu* menu) {
+        if (!menu) {
+            return;
+        }
+        auto* actDefault = menu->addAction(QStringLiteral("恢复默认布局"));
         actDefault->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
         connect(actDefault, &QAction::triggered, this, [this]() {
             for (QDockWidget* d : {m_dockLink, m_dockGroups, m_dockSeams, m_dockValues, m_dockDetail}) {
@@ -929,7 +937,16 @@ void MainWindow::buildDocks() {
             m_dockLog->hide();
             applyDefaultDockLayout();
         });
+    };
+    addDefaultLayoutAction(m_viewMenu);
+    addDefaultLayoutAction(m_panelMenu);
+
+    // 坑：在主窗口 show() 之前调用 toggleViewAction()，QDockWidget 会按"当前不可见"
+    // 初始化该动作的选中态，进而把自己隐藏。所以绑完显隐动作后要显式恢复一次可见性。
+    for (QDockWidget* d : {m_dockLink, m_dockGroups, m_dockSeams, m_dockValues, m_dockDetail}) {
+        d->show();
     }
+    m_dockLog->hide();
 }
 
 void MainWindow::applyDefaultDockLayout() {
@@ -1070,8 +1087,8 @@ void MainWindow::refreshGroupsPanel() {
         delBtn->setFixedSize(20, 20);
         delBtn->setStyleSheet(QString(
             "QPushButton{background-color:transparent;color:%1;border:none;font-weight:bold;font-size:11pt;}"
-            "QPushButton:hover{background-color:%2;color:#ff7b72;}")
-            .arg(theme::C_DIM.name(), theme::C_HOVER.name()));
+            "QPushButton:hover{background-color:%2;color:%3;}")
+            .arg(theme::C_DIM.name(), theme::C_HOVER.name(), theme::C_REC.name()));
         connect(delBtn, &QPushButton::clicked, this, [this, i]() { removeGroup(i); });
         titleRow->addWidget(delBtn, 0, Qt::AlignTop);
         cv->addLayout(titleRow);
@@ -1910,11 +1927,12 @@ void MainWindow::restoreUiState() {
         restoreGeometry(geo);
     }
     // 面板结构改过（版本号不一致）就忽略旧布局，避免恢复出半截界面
-    if (s.value(QStringLiteral("ui/dockVersion")).toInt() != kDockStateVersion) {
+    const int ver = s.value(QStringLiteral("ui/dockVersion")).toInt();
+    const QByteArray st = s.value(QStringLiteral("ui/layout")).toByteArray();
+    if (ver != kDockStateVersion) {
         QTimer::singleShot(0, this, [this]() { applyDefaultDockLayout(); });
         return;
     }
-    const QByteArray st = s.value(QStringLiteral("ui/layout")).toByteArray();
     if (!st.isEmpty()) {
         if (restoreState(st, kDockStateVersion)) {
             return;               // 恢复成功：用户自己的布局优先
