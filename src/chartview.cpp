@@ -1096,7 +1096,7 @@ void ChartView::startPan(const QPointF& pos) {
     m_py20 = m_y20; m_py21 = m_y21;
     if (!m_locked) {
         m_locked = true;
-        emit lockChanged(true, QStringLiteral("🔒 手动平移中"));
+        emit lockChanged(true, QStringLiteral("视图已锁定（手动平移中）"));
     }
     clearHover();
     setCursor(Qt::ClosedHandCursor);
@@ -1163,7 +1163,7 @@ void ChartView::zoomAt(const QPointF& pos, double scale) {
     }
     if (!m_locked) {
         m_locked = true;
-        emit lockChanged(true, QStringLiteral("🔒 手动缩放中"));
+        emit lockChanged(true, QStringLiteral("视图已锁定（手动缩放中）"));
     }
     update();
 }

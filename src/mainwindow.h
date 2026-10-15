@@ -95,7 +95,9 @@ private:
     QWidget* buildDetailPanel();
     QWidget* buildLinkPanel();             // 链路状态（端口/本机 IP/连接）
     QWidget* buildLogPanel();
-    QDockWidget* makeDock(const QString& title, QWidget* content, const QString& objName);
+    QDockWidget* makeDock(const QString& icon, const QString& title, QWidget* content,
+                          const QString& objName);
+    QWidget* makeDockTitle(QDockWidget* dock, const QString& icon, const QString& text);
     void applyDefaultDockLayout();          // 默认列宽/高度分配（首次运行或"恢复默认布局"）
     void logMessage(const QString& msg);   // 状态消息 → 状态栏 + 日志面板
     void saveUiState();

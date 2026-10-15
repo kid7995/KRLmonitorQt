@@ -388,15 +388,19 @@ void MainWindow::buildMainToolBar() {
         }
     });
     moreMenu->addSeparator();
-    QAction* a = moreMenu->addAction(QStringLiteral("✂ 新件（手工切分）"));
+    QAction* a = moreMenu->addAction(QStringLiteral("新件（手工切分）"));
+    a->setIcon(icons::get(QStringLiteral("part"), theme::C_WARN));
     a->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
     connect(a, &QAction::triggered, this, &MainWindow::onNewPart);
-    a = moreMenu->addAction(QStringLiteral("↺ 重置视图"));
+    a = moreMenu->addAction(QStringLiteral("重置视图"));
+    a->setIcon(icons::get(QStringLiteral("reset"), theme::C_INFO));
     connect(a, &QAction::triggered, this, [this]() { if (m_chart) m_chart->resetView(); });
     moreMenu->addSeparator();
-    a = moreMenu->addAction(QStringLiteral("✕ 清除全部数据组"));
+    a = moreMenu->addAction(QStringLiteral("清除全部数据组"));
+    a->setIcon(icons::get(QStringLiteral("trash"), theme::C_REC));
     connect(a, &QAction::triggered, this, &MainWindow::onClear);
-    a = moreMenu->addAction(QStringLiteral("⛭ 设置…"));
+    a = moreMenu->addAction(QStringLiteral("设置…"));
+    a->setIcon(icons::get(QStringLiteral("settings"), theme::C_DIM));
     connect(a, &QAction::triggered, this, &MainWindow::onSettings);
     tb->addWidget(btnMore);
 
@@ -488,10 +492,6 @@ QWidget* MainWindow::buildGroupsPanel() {
     v->setSpacing(4);
 
     auto* hdr = new QHBoxLayout();
-    auto* title = new QLabel(QStringLiteral("📊  数据组管理"), outer);
-    title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
-                         .arg(theme::C_PASS.name()));
-    hdr->addWidget(title);
     m_groupsHint = new QLabel(QString(), outer);
     m_groupsHint->setWordWrap(true);
     m_groupsHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
@@ -869,7 +869,8 @@ void MainWindow::buildChartArea() {
         "QToolBar::separator{background-color:%2;width:1px;margin:3px 8px;}")
         .arg(theme::PANEL.name(), theme::BORDER.name()));
 
-    auto* actReset = m_chartBar->addAction(QStringLiteral("↺ 重置视图"));
+    auto* actReset = m_chartBar->addAction(QStringLiteral("重置视图"));
+    actReset->setIcon(icons::get(QStringLiteral("reset"), theme::C_INFO));
     actReset->setToolTip(QStringLiteral("解锁缩放/平移并重新自动适配范围（双击图表同效）"));
     connect(actReset, &QAction::triggered, this, [this]() {
         if (m_chart) m_chart->resetView();
@@ -913,10 +914,48 @@ void MainWindow::buildChartArea() {
 
 // ── 停靠面板 ----------------------------------------------------
 
-QDockWidget* MainWindow::makeDock(const QString& title, QWidget* content, const QString& objName) {
+// 面板标题栏：统一用矢量线性图标 + 标题 + 浮动/隐藏按钮。
+// 原来的 emoji 前缀（🔗📊🧲…）是彩色字形，和全局的线性图标语言冲突，已全部去掉。
+QWidget* MainWindow::makeDockTitle(QDockWidget* dock, const QString& icon, const QString& text) {
+    auto* w = new QWidget(dock);
+    auto* h = new QHBoxLayout(w);
+    h->setContentsMargins(8, 5, 4, 5);
+    h->setSpacing(6);
+    auto* ic = new QLabel(w);
+    ic->setPixmap(icons::get(icon, theme::C_INFO).pixmap(16, 16));
+    auto* lb = new QLabel(text, w);
+    lb->setStyleSheet(QStringLiteral("font-weight:600;color:#44515E;"));
+    h->addWidget(ic);
+    h->addWidget(lb);
+    h->addStretch();
+    auto mkBtn = [&](const QString& glyph, const QString& tip) {
+        auto* b = new QToolButton(w);
+        b->setText(glyph);
+        b->setToolTip(tip);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setAutoRaise(true);
+        b->setFixedSize(20, 20);
+        b->setStyleSheet(QStringLiteral(
+            "QToolButton{border:none;border-radius:3px;color:%1;}"
+            "QToolButton:hover{background:#D8E0E8;}").arg(theme::C_DIM.name()));
+        return b;
+    };
+    auto* bFloat = mkBtn(QStringLiteral("▢"), QStringLiteral("浮动 / 停靠"));
+    connect(bFloat, &QToolButton::clicked, dock, [dock]() { dock->setFloating(!dock->isFloating()); });
+    auto* bClose = mkBtn(QStringLiteral("✕"), QStringLiteral("隐藏面板（Ctrl+1~6 恢复）"));
+    connect(bClose, &QToolButton::clicked, dock, [dock]() { dock->hide(); });
+    h->addWidget(bFloat);
+    h->addWidget(bClose);
+    dock->setTitleBarWidget(w);
+    return w;
+}
+
+QDockWidget* MainWindow::makeDock(const QString& icon, const QString& title, QWidget* content,
+                                  const QString& objName) {
     auto* d = new QDockWidget(title, this);
     d->setObjectName(objName);        // saveState/restoreState 依赖 objectName
     d->setWidget(content);
+    makeDockTitle(d, icon, title);
     d->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
     d->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
                    | QDockWidget::DockWidgetClosable);
@@ -925,12 +964,12 @@ QDockWidget* MainWindow::makeDock(const QString& title, QWidget* content, const 
 }
 
 void MainWindow::buildDocks() {
-    m_dockLink   = makeDock(QStringLiteral("🔗 链路状态"), buildLinkPanel(),   QStringLiteral("dockLink"));
-    m_dockGroups = makeDock(QStringLiteral("📊 数据组"),   buildGroupsPanel(), QStringLiteral("dockGroups"));
-    m_dockSeams  = makeDock(QStringLiteral("🧲 焊缝"),     buildSeamPanel(),   QStringLiteral("dockSeams"));
-    m_dockValues = makeDock(QStringLiteral("📈 数值"),     buildValuePanel(),  QStringLiteral("dockValues"));
-    m_dockDetail = makeDock(QStringLiteral("🔍 详情"),     buildDetailPanel(), QStringLiteral("dockDetail"));
-    m_dockLog    = makeDock(QStringLiteral("📝 日志"),     buildLogPanel(),    QStringLiteral("dockLog"));
+    m_dockLink   = makeDock(QStringLiteral("link"),   QStringLiteral("链路状态"), buildLinkPanel(),   QStringLiteral("dockLink"));
+    m_dockGroups = makeDock(QStringLiteral("panels"), QStringLiteral("数据组"),   buildGroupsPanel(), QStringLiteral("dockGroups"));
+    m_dockSeams  = makeDock(QStringLiteral("step"),   QStringLiteral("焊缝"),     buildSeamPanel(),   QStringLiteral("dockSeams"));
+    m_dockValues = makeDock(QStringLiteral("values"), QStringLiteral("数值"),     buildValuePanel(),  QStringLiteral("dockValues"));
+    m_dockDetail = makeDock(QStringLiteral("detail"), QStringLiteral("详情"),     buildDetailPanel(), QStringLiteral("dockDetail"));
+    m_dockLog    = makeDock(QStringLiteral("log"),    QStringLiteral("日志"),     buildLogPanel(),    QStringLiteral("dockLog"));
 
     addDockWidget(Qt::LeftDockWidgetArea, m_dockLink);
     addDockWidget(Qt::LeftDockWidgetArea, m_dockGroups);
@@ -1463,7 +1502,7 @@ void MainWindow::onTick() {
     if (res.started >= 0) {
         // 新周期开始：交给分件器决定是"同一件的新周期"还是"新的一件"
         m_parts.onCycleStart(QDateTime::currentDateTime());
-        setStatus(QStringLiteral("🔴 记录中 — %1（第 %2 组）")
+        setStatus(QStringLiteral("● 记录中 — %1（第 %2 组）")
                   .arg(m_parts.current().label).arg(res.started));
     }
 
@@ -1526,16 +1565,16 @@ void MainWindow::onTick() {
     // 件（料件）识别：把本帧的焊缝号/工序喂给分件器（CraftRestart / SeamWrap 规则在此判定）
     if (res.hasLastVal && res.lastSeam > 0) {
         if (m_parts.onSeamSeen(res.lastSeam, res.lastCraft, QDateTime::currentDateTime())) {
-            setStatus(QStringLiteral("✂ 已按焊缝序列切分新件：%1").arg(m_parts.current().label));
+            setStatus(QStringLiteral("已按焊缝序列切分新件：%1").arg(m_parts.current().label));
         }
         m_detailSeam = 0;      // 详情跟随当前焊缝
     }
 
     // 记录状态指示灯
     if (m_recorder->recGroupIdx >= 0) {
-        setRecState(QStringLiteral("🔴 记录中"), theme::C_REC);
+        setRecState(QStringLiteral("● 记录中"), theme::C_REC);
     } else if (res.sealed) {
-        setRecState(QStringLiteral("⏹ 已完成"), theme::C_WARN_HI);
+        setRecState(QStringLiteral("■ 已完成"), theme::C_WARN_HI);
     } else {
         setRecState(QStringLiteral("○ 等待触发"), theme::C_DIM);
     }
@@ -1583,10 +1622,10 @@ void MainWindow::onTick() {
             m_server->setArmed(false);
             m_btnPause->setText(QStringLiteral("▶  继续"));
             updateHoverActive();
-            setStatus(QStringLiteral("⏹ %1 记录完成（%2）%3 — 已冻结暂停，点\"继续\"等待下次打磨")
+            setStatus(QStringLiteral("■ %1 记录完成（%2）%3 — 已冻结暂停，点\"继续\"等待下次打磨")
                       .arg(label).arg(summary).arg(tail));
         } else {
-            setStatus(QStringLiteral("⏹ %1 记录完成（%2）%3 — 继续监听，等待下次 RecordOn 触发…")
+            setStatus(QStringLiteral("■ %1 记录完成（%2）%3 — 继续监听，等待下次 RecordOn 触发…")
                       .arg(label).arg(summary).arg(tail));
         }
     }
@@ -1768,7 +1807,7 @@ void MainWindow::toggleAutoPause() {
     m_autoPause = !m_autoPause;
     syncToggles();
     setStatus(m_autoPause
-              ? QStringLiteral("⏹ 打磨完成（RecordOn 下降沿）后将冻结暂停")
+              ? QStringLiteral("■ 打磨完成（RecordOn 下降沿）后将冻结暂停")
               : QStringLiteral("▶ 打磨完成后继续监听，连续多次打磨自动记成多组"));
 }
 
@@ -1974,13 +2013,13 @@ void MainWindow::enforceMemoryPolicy() {
         }
         const QString name = m_groups[victim]->name;
         removeGroup(victim);
-        setStatus(QStringLiteral("♻ 已落盘并回收内存：%1（可在存档目录重新载入）").arg(name));
+        setStatus(QStringLiteral("已落盘并回收内存：%1（可在存档目录重新载入）").arg(name));
     }
 }
 
 void MainWindow::onNewPart() {
     m_parts.startNewPart(QDateTime::currentDateTime());
-    setStatus(QStringLiteral("✂ 已手工切分：下一组数据记为 %1").arg(m_parts.current().label));
+    setStatus(QStringLiteral("已手工切分：下一组数据记为 %1").arg(m_parts.current().label));
 }
 
 void MainWindow::onServerDisconnected() {
