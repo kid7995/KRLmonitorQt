@@ -294,6 +294,21 @@ void ChartView::resetView() {
     relimAll();
 }
 
+void ChartView::zoomToTimeRange(double t0, double t1) {
+    if (!(t1 > t0)) {
+        return;
+    }
+    const double pad = (t1 - t0) * 0.08 + 0.05;
+    m_x0 = t0 - pad;
+    m_x1 = t1 + pad;
+    if (!m_locked) {
+        m_locked = true;
+        emit lockChanged(true, QStringLiteral("视图已锁定（段定位）"));
+    }
+    clearHover();
+    update();
+}
+
 // ── 绘制 ────────────────────────────────────────────────────────
 
 void ChartView::drawLine(QPainter& p, const XY& xy, const QColor& color,

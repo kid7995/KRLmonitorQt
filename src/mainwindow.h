@@ -25,6 +25,7 @@ class QTimer;
 class QDockWidget;
 class QToolBar;
 class QPlainTextEdit;
+class QListWidget;
 class QCloseEvent;
 class ChartView;
 class TcpServer;
@@ -110,6 +111,7 @@ private:
     void refreshSeamChips();                   // 只刷新 chip 的选中/高亮状态
     void applyViewFilters();                   // 把当前过滤条件推给图表
     void refreshSeamDetail();                  // 刷新"检测结果"那行文字
+    void refreshSegmentList();                 // 刷新"段列表"（点击定位到曲线）
     void refreshLinkLabel();                   // 刷新"端口/KUKA 连接"指示灯
     void refreshLocalIps();
     void writeStartupLog();                    // 启动日志（监听结果写文件，便于现场排查）
@@ -203,6 +205,7 @@ private:
     QMenu* m_viewMenu = nullptr;       // 视图菜单（面板显隐在 buildDocks() 里补齐）
     QLabel* m_seamContext = nullptr;   // 数值栏：焊缝 k/8 · 阶段 · 第 n 遍
     QLabel* m_detectLabel = nullptr;   // 焊缝栏右侧：检测结果（高度/基材/错边/轮次）
+    QListWidget* m_segList = nullptr;  // 详情面板：段列表（空走/预备位/打磨道次/抬起…）
     QHash<int, QPushButton*> m_seamChips;   // 焊缝号 -> chip
     QSet<int> m_seamSel;               // 要"突出显示"的焊缝（空 = 全部正常显示）
     int m_detailSeam = 0;              // 右侧详情显示哪条焊缝（0 = 跟随当前）

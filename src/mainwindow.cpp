@@ -625,6 +625,7 @@ QWidget* MainWindow::buildSeamPanel() {
 void MainWindow::refreshSeamPanel() {
     refreshSeamChips();
     refreshSeamDetail();
+    refreshSegmentList();     // 段列表跟随参考组/记录进度一起刷新
 }
 
 void MainWindow::setSeamSelected(int seam, bool on) {
@@ -1092,8 +1093,66 @@ QWidget* MainWindow::buildDetailPanel() {
     m_seamHint->setWordWrap(true);
     m_seamHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
     v->addWidget(m_seamHint);
-    v->addStretch();
+
+    auto* segTitle = new QLabel(QStringLiteral("段列表（点击定位）"), w);
+    segTitle->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
+                            .arg(theme::C_TEXT.name()));
+    v->addWidget(segTitle);
+
+    m_segList = new QListWidget(w);
+    m_segList->setAlternatingRowColors(false);
+    m_segList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_segList->setStyleSheet(QStringLiteral(
+        "QListWidget{background:%1;border:1px solid %2;border-radius:5px;font-size:8pt;}"
+        "QListWidget::item{padding:3px 6px;}"
+        "QListWidget::item:selected{background:%3;color:%4;}")
+        .arg(theme::SURFACE.name(), theme::BORDER.name(),
+             theme::C_HOVER.name(), theme::C_INFO.name()));
+    connect(m_segList, &QListWidget::itemClicked, this, [this](QListWidgetItem* it) {
+        const int gi = refGroupIdx();
+        if (!it || gi < 0 || gi >= m_groups.size()) {
+            return;
+        }
+        const int si = it->data(Qt::UserRole).toInt();
+        const DataGroup* g = m_groups[gi];
+        if (si < 0 || si >= g->seam.segments.size()) {
+            return;
+        }
+        const Segment& s = g->seam.segments[si];
+        m_chart->zoomToTimeRange(s.t0, s.t1);
+        setStatus(QStringLiteral("已定位到：%1（%2 ~ %3 s）")
+                  .arg(seamPhaseLabel(s.kind))
+                  .arg(s.t0, 0, 'f', 2).arg(s.t1, 0, 'f', 2));
+    });
+    v->addWidget(m_segList, 1);
     return w;
+}
+
+// 段列表：把参考组的段按时间顺序列出来，点一条就把曲线缩放到那一段
+void MainWindow::refreshSegmentList() {
+    if (!m_segList) {
+        return;
+    }
+    m_segList->clear();
+    const int gi = refGroupIdx();
+    if (gi < 0 || gi >= m_groups.size()) {
+        return;
+    }
+    const DataGroup* g = m_groups[gi];
+    for (int i = 0; i < g->seam.segments.size(); ++i) {
+        const Segment& s = g->seam.segments[i];
+        QString txt = seamPhaseLabel(s.kind);
+        if (s.seam > 0 && s.kind != SeamPhase::None) {
+            txt += QStringLiteral(" · 焊缝%1").arg(s.seam);
+        }
+        if (s.passNo > 0) {
+            txt += QStringLiteral(" · 第%1道%2").arg(s.passNo)
+                       .arg(s.retry ? QStringLiteral("(补)") : QString());
+        }
+        txt += QStringLiteral("　%1~%2 s").arg(s.t0, 0, 'f', 1).arg(s.t1, 0, 'f', 1);
+        auto* it = new QListWidgetItem(txt, m_segList);
+        it->setData(Qt::UserRole, i);
+    }
 }
 
 // 📝 日志：把状态消息按时间戳累积下来（默认隐藏，Ctrl+6 唤出）

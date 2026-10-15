@@ -49,6 +49,8 @@ public:
     void resetView();   // 解锁 + 重算范围
     void relimAll();    // 从可见曲线重算范围
     void clearHover();  // 清除悬停标注
+    // 把视图缩放到给定时间段（供"段列表点击定位"用；会顺带锁定视图，避免被实时刷新冲掉）
+    void zoomToTimeRange(double t0, double t1);
 
 signals:
     void lockChanged(bool locked, const QString& msg);
