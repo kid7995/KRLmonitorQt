@@ -3,12 +3,23 @@
 #include <QApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QFrame>
 #include <QButtonGroup>
 #include <QRadioButton>
 #include <QTimer>
+#include <QToolBar>
+#include <QDockWidget>
+#include <QStatusBar>
+#include <QMenuBar>
+#include <QMenu>
+#include <QAction>
+#include <QKeySequence>
+#include <QPlainTextEdit>
+#include <QScrollArea>
+#include <QCloseEvent>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QDialog>
@@ -36,6 +47,9 @@
 #include "ecmfile.h"
 
 namespace {
+
+// 面板布局的版本号：以后增删停靠面板时把它 +1，旧布局会自动失效回默认
+constexpr int kDockStateVersion = 1;
 
 // 一组的"焊缝范围 + 工序"：用于组名与存档文件名
 void seamRangeOf(const DataGroup& g, int* first, int* last, Craft* craft) {
@@ -195,27 +209,21 @@ int pickGroupDialog(QWidget* parent, const QVector<DataGroup*>& groups, const QS
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(QStringLiteral("ECM Monitor — 实时波形（多组数据）"));
-    resize(1400, 860);
-    setMinimumSize(1000, 620);
+    resize(1600, 950);
+    setMinimumSize(1180, 680);
+    // 面板只在左/右/下三列之间移动，不做嵌套，避免拖乱之后找不回来
+    setDockNestingEnabled(false);
 
     m_recorder = new Recorder(&m_groups, [this](const QString& name) {
         return addGroup(name, QVector<double>(), QVector<int>(), QVector<int>(),
                         QVector<int>(), QVector<int>(), true);
     });
 
-    auto* central = new QWidget(this);
-    auto* v = new QVBoxLayout(central);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(0);
-    setCentralWidget(central);
-    m_rootLayout = v;
-
-    buildToolbar();
-    buildZoomBar();
-    buildGroupsPanel();
-    buildSeamPanel();
-    buildValueBar();
-    buildChart();
+    buildMenuBar();
+    buildMainToolBar();
+    buildStatusBar();
+    buildChartArea();       // 中央：图表（唯一拉伸区）
+    buildDocks();           // 左右下三列共 6 个停靠面板
 
     m_server = new TcpServer(this);
     connect(m_server, &TcpServer::statusChanged, this, &MainWindow::onStatus);
@@ -260,104 +268,142 @@ MainWindow::~MainWindow() {
 
 // ── UI 构建 ─────────────────────────────────────────────────────
 
-void MainWindow::buildToolbar() {
-    auto* bar = new QWidget(this);
-    bar->setStyleSheet(QStringLiteral("background-color:%1;border-bottom:1px solid %2;")
-                       .arg(theme::PANEL.name(), theme::BORDER.name()));
-    auto* h = new QHBoxLayout(bar);
-    h->setContentsMargins(8, 6, 8, 6);
-    h->setSpacing(2);
+// ── 菜单栏 ──────────────────────────────────────────────────────
+// 高频动作给快捷键；"视图"菜单里的面板显隐在 buildDocks() 里补齐
+//（QDockWidget::toggleViewAction 要等面板建好才存在）。
+
+void MainWindow::buildMenuBar() {
+    auto* mFile = menuBar()->addMenu(QStringLiteral("文件(&F)"));
+    auto* actLoad = mFile->addAction(QStringLiteral("添加数据组…"));
+    actLoad->setShortcut(QKeySequence(QStringLiteral("Ctrl+O")));
+    connect(actLoad, &QAction::triggered, this, &MainWindow::onLoad);
+    auto* actSave = mFile->addAction(QStringLiteral("保存当前组…"));
+    actSave->setShortcut(QKeySequence(QStringLiteral("Ctrl+S")));
+    connect(actSave, &QAction::triggered, this, &MainWindow::onSave);
+    mFile->addSeparator();
+    auto* actQuit = mFile->addAction(QStringLiteral("退出"));
+    actQuit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
+    connect(actQuit, &QAction::triggered, this, &QWidget::close);
+
+    auto* mRun = menuBar()->addMenu(QStringLiteral("运行(&R)"));
+    auto* actStart = mRun->addAction(QStringLiteral("开始监听"));
+    actStart->setShortcut(QKeySequence(Qt::Key_F5));
+    connect(actStart, &QAction::triggered, this, &MainWindow::onStart);
+    auto* actPause = mRun->addAction(QStringLiteral("暂停 / 继续"));
+    actPause->setShortcut(QKeySequence(Qt::Key_F6));
+    connect(actPause, &QAction::triggered, this, &MainWindow::onPause);
+    auto* actNewPart = mRun->addAction(QStringLiteral("新件（手工切分）"));
+    actNewPart->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
+    connect(actNewPart, &QAction::triggered, this, &MainWindow::onNewPart);
+
+    auto* mTool = menuBar()->addMenu(QStringLiteral("工具(&T)"));
+    auto* actClear = mTool->addAction(QStringLiteral("清除全部数据组"));
+    connect(actClear, &QAction::triggered, this, &MainWindow::onClear);
+    auto* actSettings = mTool->addAction(QStringLiteral("设置…"));
+    connect(actSettings, &QAction::triggered, this, &MainWindow::onSettings);
+
+    m_viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+
+    auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+    auto* actAbout = mHelp->addAction(QStringLiteral("关于 / 运行信息"));
+    connect(actAbout, &QAction::triggered, this, [this]() {
+        QMessageBox::information(this, QStringLiteral("关于 ECM Monitor"),
+            QStringLiteral("ECM Monitor（KRLmonitor）\n\n"
+                           "监听端口：%1\n本机地址：%2\n存档目录：%3\n\n"
+                           "数据组上限：%4　内存保留：%5 组")
+                .arg(LISTEN_PORT).arg(m_localIps).arg(todayArchiveDir())
+                .arg(MAX_GROUPS).arg(m_arch.keepGroups));
+    });
+}
+
+// ── 主工具条 ────────────────────────────────────────────────────
+// 分组：运行控制 │ 数据 │ 业务/设置 │ 视图（缩放模式 + 阶段/工序过滤）
+
+void MainWindow::buildMainToolBar() {
+    QToolBar* tb = addToolBar(QStringLiteral("主工具条"));
+    tb->setObjectName(QStringLiteral("mainToolBar"));
+    tb->setMovable(true);
+    tb->setFloatable(false);
+    tb->setStyleSheet(QStringLiteral(
+        "QToolBar{background-color:%1;border-bottom:1px solid %2;spacing:4px;padding:3px 6px;}"
+        "QToolBar::separator{background-color:%2;width:1px;margin:4px 8px;}")
+        .arg(theme::PANEL.name(), theme::BORDER.name()));
 
     m_btnStart = makeBtn(QStringLiteral("▶ 开始监听"), theme::C_OK, theme::C_OK_HI);
+    m_btnStart->setToolTip(QStringLiteral("开始/继续监听（F5）"));
     connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStart);
-    h->addWidget(m_btnStart);
+    tb->addWidget(m_btnStart);
 
     m_btnPause = makeBtn(QStringLiteral("⏸ 暂停"), theme::C_WARN, theme::C_WARN_HI);
     m_btnPause->setEnabled(false);
+    m_btnPause->setToolTip(QStringLiteral("暂停 / 继续（F6）"));
     connect(m_btnPause, &QPushButton::clicked, this, &MainWindow::onPause);
-    h->addWidget(m_btnPause);
+    tb->addWidget(m_btnPause);
 
-    h->addSpacing(8);
-    h->addWidget(vSeparator());
+    m_btnAutoPause = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    connect(m_btnAutoPause, &QPushButton::clicked, this, &MainWindow::toggleAutoPause);
+    tb->addWidget(m_btnAutoPause);
+
+    tb->addSeparator();
 
     auto* btnSave = makeBtn(QStringLiteral("💾 保存"), theme::C_INFO, theme::C_INFO_HI);
+    btnSave->setToolTip(QStringLiteral("保存当前数据组（Ctrl+S）"));
     connect(btnSave, &QPushButton::clicked, this, &MainWindow::onSave);
-    h->addWidget(btnSave);
+    tb->addWidget(btnSave);
 
     auto* btnLoad = makeBtn(QStringLiteral("➕ 添加数据组"), theme::C_PURPLE, theme::C_PURPLE_HI);
+    btnLoad->setToolTip(QStringLiteral("载入 .ecmb / CSV 作为对比组（Ctrl+O）"));
     connect(btnLoad, &QPushButton::clicked, this, &MainWindow::onLoad);
-    h->addWidget(btnLoad);
+    tb->addWidget(btnLoad);
 
     auto* btnClear = makeBtn(QStringLiteral("✕ 清除全部"), theme::BORDER, theme::C_HOVER,
                              theme::C_DIM, theme::C_TEXT);
     connect(btnClear, &QPushButton::clicked, this, &MainWindow::onClear);
-    h->addWidget(btnClear);
+    tb->addWidget(btnClear);
+
+    tb->addSeparator();
 
     auto* btnNewPart = makeBtn(QStringLiteral("✂ 新件"), theme::C_WARN, theme::C_WARN_HI);
-    btnNewPart->setToolTip(QStringLiteral("手工切分：下一组数据算作新的一件（分件规则失效时的兜底）"));
+    btnNewPart->setToolTip(QStringLiteral("手工切分：下一组数据算作新的一件（Ctrl+N）"));
     connect(btnNewPart, &QPushButton::clicked, this, &MainWindow::onNewPart);
-    h->addWidget(btnNewPart);
+    tb->addWidget(btnNewPart);
 
     auto* btnSettings = makeBtn(QStringLiteral("⛭ 设置"), theme::BORDER, theme::C_HOVER,
                                 theme::C_DIM, theme::C_TEXT);
     connect(btnSettings, &QPushButton::clicked, this, &MainWindow::onSettings);
-    h->addWidget(btnSettings);
+    tb->addWidget(btnSettings);
 
-    h->addSpacing(8);
-    h->addWidget(vSeparator());
+    tb->addSeparator();
 
-    m_btnSeg = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
-    connect(m_btnSeg, &QPushButton::clicked, this, &MainWindow::toggleSegments);
-    h->addWidget(m_btnSeg);
+    // 视图：缩放模式 + 阶段/工序过滤（叠道/ESpos/道次分割在图表工具条上另行分组见 S2）
+    buildZoomControls();
 
-    m_btnOverlay = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
-    connect(m_btnOverlay, &QPushButton::clicked, this, &MainWindow::toggleOverlay);
-    h->addWidget(m_btnOverlay);
-
-    m_btnEsPos = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
-    connect(m_btnEsPos, &QPushButton::clicked, this, &MainWindow::toggleEsPos);
-    h->addWidget(m_btnEsPos);
-
-    m_btnAutoPause = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
-    connect(m_btnAutoPause, &QPushButton::clicked, this, &MainWindow::toggleAutoPause);
-    h->addWidget(m_btnAutoPause);
-
-    h->addStretch();
-    // 常驻连接指示灯：优先于会不断被刷新的状态文字，保证"看着是否通"这件事永远可见
-    m_linkLabel = new QLabel(QStringLiteral("🔌 端口 %1 ○ 等待 KUKA 连接").arg(LISTEN_PORT), bar);
-    m_linkLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
-                               .arg(theme::C_WARN_HI.name()));
-    h->addWidget(m_linkLabel);
-    h->addSpacing(14);
-
-    m_statusLabel = new QLabel(QStringLiteral("◎ 正在启动…"), bar);
-    m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;").arg(theme::C_DIM.name()));
-    h->addWidget(m_statusLabel);
-
-    m_rootLayout->addWidget(bar);
+    // 右侧留空：状态信息统一放到状态栏，工具条不再被状态文字挤动
+    auto* spacer = new QWidget(tb);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tb->addWidget(spacer);
 }
 
-void MainWindow::buildZoomBar() {
-    auto* bar = new QWidget(this);
-    bar->setStyleSheet(QStringLiteral("background-color:%1;border-bottom:1px solid %2;")
-                       .arg(theme::PANEL.name(), theme::BORDER.name()));
-    auto* h = new QHBoxLayout(bar);
-    h->setContentsMargins(12, 4, 12, 4);
+// 缩放模式 + 阶段/工序过滤 + 几个视图开关（S1 先按原样搬进来，S2 再做成分段控件）
+QWidget* MainWindow::buildZoomControls() {
+    QToolBar* tb = findChild<QToolBar*>(QStringLiteral("mainToolBar"));
+    auto* w = new QWidget(tb);
+    auto* h = new QHBoxLayout(w);
+    h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(6);
 
-    auto* lbl = new QLabel(QStringLiteral("🔍 滚轮缩放 / 拖拽平移："), bar);
-    lbl->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;").arg(theme::C_DIM.name()));
+    auto* lbl = new QLabel(QStringLiteral("缩放"), w);
+    lbl->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
     h->addWidget(lbl);
 
-    m_zoomGroup = new QButtonGroup(bar);
+    m_zoomGroup = new QButtonGroup(w);
     const QStringList modes{QStringLiteral("X轴"), QStringLiteral("Y轴"), QStringLiteral("双轴")};
     for (const QString& mode : modes) {
-        auto* rb = new QRadioButton(mode, bar);
+        auto* rb = new QRadioButton(mode, w);
         rb->setCursor(Qt::PointingHandCursor);
-        rb->setStyleSheet(QString(
-            "QRadioButton{color:%1;font-size:10pt;}"
-            "QRadioButton::indicator{width:14px;height:14px;}")
-            .arg(theme::C_TEXT.name()));
+        rb->setStyleSheet(QStringLiteral("QRadioButton{color:%1;font-size:9pt;}"
+                                         "QRadioButton::indicator{width:13px;height:13px;}")
+                              .arg(theme::C_TEXT.name()));
         if (mode == QStringLiteral("X轴")) rb->setChecked(true);
         m_zoomGroup->addButton(rb);
         h->addWidget(rb);
@@ -369,10 +415,8 @@ void MainWindow::buildZoomBar() {
         });
     }
 
-    h->addSpacing(8);
     h->addWidget(vSeparator());
 
-    // 拆分视图：阶段 / 工序 过滤（需求 2、4）
     m_btnPhase = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
     connect(m_btnPhase, &QPushButton::clicked, this, &MainWindow::togglePhaseView);
     h->addWidget(m_btnPhase);
@@ -381,31 +425,39 @@ void MainWindow::buildZoomBar() {
     connect(m_btnCraft, &QPushButton::clicked, this, &MainWindow::toggleCraftView);
     h->addWidget(m_btnCraft);
 
-    auto* btnReset = new QPushButton(QStringLiteral("↺ 重置视图"), bar);
-    btnReset->setCursor(Qt::PointingHandCursor);
-    btnReset->setStyleSheet(QString(
-        "QPushButton{background-color:%1;color:%2;border:none;padding:4px 12px;font-size:10pt;}"
-        "QPushButton:hover{background-color:%3;color:%4;}")
-        .arg(theme::BORDER.name(), theme::C_DIM.name(),
-             theme::C_HOVER.name(), theme::C_TEXT.name()));
-    connect(btnReset, &QPushButton::clicked, this, [this]() {
-        if (m_chart) m_chart->resetView();
-    });
-    h->addWidget(btnReset);
-
-    auto* hint = new QLabel(QStringLiteral("（按住拖动可平移  ·  双击图表可重置）"), bar);
-    hint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
-    h->addWidget(hint);
-
-    h->addStretch();
-    m_lockLabel = new QLabel(QString(), bar);
-    m_lockLabel->setStyleSheet(QStringLiteral("color:#f0a500;font-weight:bold;font-size:9pt;"));
-    h->addWidget(m_lockLabel);
-
-    m_rootLayout->addWidget(bar);
+    if (tb) {
+        tb->addWidget(w);
+    }
+    return w;
 }
 
-void MainWindow::buildGroupsPanel() {
+// ── 状态栏 ──────────────────────────────────────────────────────
+// 左：连接状态（永远可见） + 记录状态；右：最近一条消息
+
+void MainWindow::buildStatusBar() {
+    QStatusBar* sb = statusBar();
+    sb->setSizeGripEnabled(true);
+    sb->setStyleSheet(QStringLiteral(
+        "QStatusBar{background-color:%1;border-top:1px solid %2;}"
+        "QStatusBar::item{border:none;}")
+        .arg(theme::PANEL.name(), theme::BORDER.name()));
+
+    m_linkLabel = new QLabel(QStringLiteral("○ 端口 %1").arg(LISTEN_PORT), sb);
+    m_linkLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;padding:0 10px;")
+                               .arg(theme::C_WARN_HI.name()));
+    sb->addWidget(m_linkLabel);
+
+    m_recLabel = new QLabel(sb);
+    sb->addWidget(m_recLabel);
+    setRecState(QStringLiteral("○ 未监听"), theme::C_DIM);
+
+    m_statusLabel = new QLabel(QStringLiteral("◎ 正在启动…"), sb);
+    m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;padding:0 10px;")
+                                 .arg(theme::C_DIM.name()));
+    sb->addPermanentWidget(m_statusLabel, 1);
+}
+
+QWidget* MainWindow::buildGroupsPanel() {
     auto* outer = new QWidget(this);
     outer->setStyleSheet(QStringLiteral("background-color:%1;border-bottom:1px solid %2;")
                          .arg(theme::PANEL.name(), theme::BORDER.name()));
@@ -419,22 +471,27 @@ void MainWindow::buildGroupsPanel() {
                          .arg(theme::C_PASS.name()));
     hdr->addWidget(title);
     m_groupsHint = new QLabel(QString(), outer);
+    m_groupsHint->setWordWrap(true);
     m_groupsHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
     hdr->addWidget(m_groupsHint);
     hdr->addStretch();
-    auto* legend = new QLabel(QStringLiteral("PosR = 实线  |  ForceR = 虚线"), outer);
-    legend->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
-    hdr->addWidget(legend);
     v->addLayout(hdr);
 
-    m_cardsWidget = new QWidget(outer);
-    m_cardsLayout = new QHBoxLayout(m_cardsWidget);
+    // 组卡片竖排放进滚动区：停靠面板只有 ~300px 宽，横排会互相挤压
+    auto* scroll = new QScrollArea(outer);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea{background:transparent;}"));
+    m_cardsWidget = new QWidget(scroll);
+    m_cardsLayout = new QVBoxLayout(m_cardsWidget);
     m_cardsLayout->setContentsMargins(0, 0, 0, 0);
-    m_cardsLayout->setSpacing(8);
-    v->addWidget(m_cardsWidget);
+    m_cardsLayout->setSpacing(6);
+    scroll->setWidget(m_cardsWidget);
+    v->addWidget(scroll, 1);
 
-    m_rootLayout->addWidget(outer);
     refreshGroupsPanel();
+    return outer;
 }
 
 // ── 焊缝（工位）面板 ────────────────────────────────────────────
@@ -449,40 +506,41 @@ int MainWindow::seamPanelGroupIdx() const {
     return refGroupIdx();
 }
 
-void MainWindow::buildSeamPanel() {
+QWidget* MainWindow::buildSeamPanel() {
     auto* outer = new QWidget(this);
-    outer->setStyleSheet(QStringLiteral(
-        "background-color:%1;border-top:1px solid %2;border-bottom:1px solid %2;")
-        .arg(theme::PANEL.name(), theme::BORDER.name()));
-    auto* v = new QHBoxLayout(outer);
-    v->setContentsMargins(10, 4, 10, 5);
+    auto* v = new QVBoxLayout(outer);
+    v->setContentsMargins(10, 8, 10, 8);
     v->setSpacing(6);
 
-    auto* title = new QLabel(QStringLiteral("🧲  焊缝（工位）实时数据"), outer);
-    title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
-                         .arg(theme::C_INFO_HI.name()));
-    v->addWidget(title);
-
     m_seamWidget = new QWidget(outer);
-    m_seamLayout = new QHBoxLayout(m_seamWidget);
+    m_seamLayout = new QGridLayout(m_seamWidget);   // 4 列 × 2 行，纵向窄栏里也放得下
     m_seamLayout->setContentsMargins(0, 0, 0, 0);
-    m_seamLayout->setSpacing(3);
+    m_seamLayout->setHorizontalSpacing(4);
+    m_seamLayout->setVerticalSpacing(4);
     v->addWidget(m_seamWidget);
 
     // 8 个 chip 常驻：显示"几号焊缝"，同时兼任"突出显示哪条焊缝"的开关。
     // 默认一个都不选 = 全部正常显示；点某号 → 这一段画粗画亮、其余淡化（仍然可见）。
+    int chipRow = 0;
+    int chipCol = 0;
     for (int k = 1; k <= SEAM_COUNT_MAX; ++k) {
         auto* b = new QPushButton(QString::number(k), m_seamWidget);
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
-        b->setFixedSize(32, 24);
+        b->setFixedHeight(26);
         b->setToolTip(QStringLiteral("焊缝 %1：点击把它的曲线突出显示（再点取消，可多选叠加）").arg(k));
         connect(b, &QPushButton::clicked, this, [this, k]() {
             setSeamSelected(k, !m_seamSel.contains(k));
         });
-        m_seamLayout->addWidget(b);
+        m_seamLayout->addWidget(b, chipRow, chipCol);
         m_seamChips.insert(k, b);
+        if (++chipCol >= 4) {
+            chipCol = 0;
+            ++chipRow;
+        }
     }
+
+    auto* btnRow = new QHBoxLayout();
     auto* btnAll = new QPushButton(QStringLiteral("全选"), m_seamWidget);
     btnAll->setToolTip(QStringLiteral("突出全部焊缝（视觉上等同正常显示）"));
     btnAll->setCursor(Qt::PointingHandCursor);
@@ -497,7 +555,7 @@ void MainWindow::buildSeamPanel() {
         refreshSeamChips();
         applyViewFilters();
     });
-    m_seamLayout->addWidget(btnAll);
+    btnRow->addWidget(btnAll);
 
     auto* btnNone = new QPushButton(QStringLiteral("取消突出"), m_seamWidget);
     btnNone->setToolTip(QStringLiteral("清除突出显示，恢复全部正常显示"));
@@ -509,26 +567,19 @@ void MainWindow::buildSeamPanel() {
         refreshSeamChips();
         applyViewFilters();
     });
-    m_seamLayout->addWidget(btnNone);
+    btnRow->addWidget(btnNone);
+    btnRow->addStretch();
+    v->addLayout(btnRow);
 
-    v->addSpacing(10);
-
-    // 检测结果（需求 1）：该焊缝的焊缝高度 / 基材高度 / 错边量 / 计划轮次
-    m_detectLabel = new QLabel(QString(), outer);
-    m_detectLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
-                                 .arg(theme::C_PASS.name()));
-    m_detectLabel->setMinimumWidth(460);
-    v->addWidget(m_detectLabel);
-
+    auto* hint = new QLabel(QStringLiteral("点焊缝号 = 在曲线上突出这一段（可多选叠加）"), outer);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
+    v->addWidget(hint);
     v->addStretch();
-    m_seamHint = new QLabel(QString(), outer);
-    m_seamHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
-    v->addWidget(m_seamHint);
-
-    m_rootLayout->addWidget(outer);
 
     m_seamSel.clear();            // 默认不突出任何焊缝 = 全部正常显示
     refreshSeamPanel();
+    return outer;
 }
 
 void MainWindow::refreshSeamPanel() {
@@ -691,73 +742,261 @@ QString MainWindow::seamSummary(const DataGroup& g) const {
     return parts.join(QStringLiteral("，"));
 }
 
-void MainWindow::buildValueBar() {
-    auto* bar = new QWidget(this);
-    bar->setStyleSheet(QStringLiteral("background-color:%1;").arg(theme::BG.name()));
-    auto* h = new QHBoxLayout(bar);
-    h->setContentsMargins(12, 4, 12, 4);
-    h->setSpacing(4);
+// ── 数值面板（右上停靠）─────────────────────────────────────────
+// 竖排：数值一行一个、右对齐；下面是"当前动作/道次/点数"。
+// （状态栏已经常驻显示连接与记录状态，这里不重复）
+
+QWidget* MainWindow::buildValuePanel() {
+    auto* w = new QWidget(this);
+    auto* g = new QGridLayout(w);
+    g->setContentsMargins(12, 10, 12, 10);
+    g->setHorizontalSpacing(12);
+    g->setVerticalSpacing(6);
 
     const QColor posC = theme::paletteOf(0).pos;
     const QColor forceC = theme::paletteOf(0).force;
+    int row = 0;
 
-    auto addVal = [&](const QString& title, const QColor& color, QLabel*& outVal, int w) {
-        auto* t = new QLabel(title, bar);
+    auto addVal = [&](const QString& title, const QColor& color, QLabel*& outVal) {
+        auto* t = new QLabel(title, w);
         t->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;").arg(color.name()));
-        h->addWidget(t);
-        outVal = new QLabel(QStringLiteral("—"), bar);
-        outVal->setStyleSheet(QStringLiteral("color:%1;font-size:15pt;font-weight:bold;").arg(color.name()));
-        outVal->setMinimumWidth(w);
-        outVal->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        h->addWidget(outVal);
-        h->addSpacing(24);
+        g->addWidget(t, row, 0, Qt::AlignLeft | Qt::AlignVCenter);
+        outVal = new QLabel(QStringLiteral("—"), w);
+        outVal->setStyleSheet(QStringLiteral("color:%1;font-size:18pt;font-weight:bold;").arg(color.name()));
+        outVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        g->addWidget(outVal, row, 1);
+        ++row;
     };
+    addVal(QStringLiteral("PosR"), posC, m_posValue);
+    addVal(QStringLiteral("ForceR"), forceC, m_forceValue);
+    addVal(QStringLiteral("ESpos"), theme::C_MONITOR, m_esValue);
+    addVal(QStringLiteral("跟随误差"), theme::C_WARN_HI, m_errValue);
 
-    addVal(QStringLiteral("实时  PosR"), posC, m_posValue, 120);
-    addVal(QStringLiteral("ForceR"), forceC, m_forceValue, 90);
-    addVal(QStringLiteral("ESpos"), theme::C_MONITOR, m_esValue, 90);
+    auto* line = new QFrame(w);
+    line->setFrameShape(QFrame::HLine);
+    line->setStyleSheet(QStringLiteral("color:%1;").arg(theme::BORDER.name()));
+    g->addWidget(line, row, 0, 1, 2);
+    ++row;
 
-    auto* te = new QLabel(QStringLiteral("跟随误差"), bar);
-    te->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;").arg(theme::C_DIM.name()));
-    h->addWidget(te);
-    m_errValue = new QLabel(QStringLiteral("—"), bar);
-    m_errValue->setStyleSheet(QStringLiteral("color:%1;font-size:15pt;font-weight:bold;")
-                              .arg(theme::C_WARN_HI.name()));
-    m_errValue->setMinimumWidth(90);
-    h->addWidget(m_errValue);
-    h->addSpacing(24);
+    auto addInfo = [&](const QString& title, QLabel*& outVal) {
+        auto* t = new QLabel(title, w);
+        t->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
+        g->addWidget(t, row, 0, Qt::AlignLeft | Qt::AlignTop);
+        outVal = new QLabel(QStringLiteral("—"), w);
+        outVal->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
+                              .arg(theme::C_INFO_HI.name()));
+        outVal->setWordWrap(true);
+        outVal->setAlignment(Qt::AlignRight | Qt::AlignTop);
+        g->addWidget(outVal, row, 1);
+        ++row;
+    };
+    addInfo(QStringLiteral("当前动作"), m_seamContext);
+    addInfo(QStringLiteral("道次"), m_passLabel);
+    addInfo(QStringLiteral("点数"), m_countLabel);
 
-    h->addStretch();
-
-    m_countLabel = new QLabel(QString(), bar);
-    m_countLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;").arg(theme::C_DIM.name()));
-    h->addWidget(m_countLabel);
-
-    m_passLabel = new QLabel(QString(), bar);
-    m_passLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
-                               .arg(theme::C_PASS.name()));
-    h->addWidget(m_passLabel);
-    h->addSpacing(20);
-
-    m_seamContext = new QLabel(QString(), bar);
-    m_seamContext->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
-                                 .arg(theme::C_INFO_HI.name()));
-    h->addWidget(m_seamContext);
-    h->addSpacing(16);
-
-    m_recLabel = new QLabel(QStringLiteral("○ 未监听"), bar);
-    setRecState(QStringLiteral("○ 未监听"), theme::C_DIM);
-    h->addWidget(m_recLabel);
-    h->addSpacing(20);
-
-    m_rootLayout->addWidget(bar);
+    g->setColumnStretch(1, 1);
+    g->setRowStretch(row, 1);
+    return w;
 }
 
-void MainWindow::buildChart() {
-    m_chart = new ChartView(&m_groups, m_recorder, this);
-    m_chart->setMinimumHeight(220);
+// ── 中央区：图表工具条 + 图表 ──────────────────────────────────
+
+void MainWindow::buildChartArea() {
+    auto* central = new QWidget(this);
+    auto* v = new QVBoxLayout(central);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+
+    m_chartBar = new QToolBar(central);
+    m_chartBar->setObjectName(QStringLiteral("chartBar"));
+    m_chartBar->setMovable(false);
+    m_chartBar->setFloatable(false);
+    m_chartBar->setStyleSheet(QStringLiteral(
+        "QToolBar{background-color:%1;border-bottom:1px solid %2;spacing:4px;padding:2px 6px;}"
+        "QToolBar::separator{background-color:%2;width:1px;margin:3px 8px;}")
+        .arg(theme::PANEL.name(), theme::BORDER.name()));
+
+    auto* actReset = m_chartBar->addAction(QStringLiteral("↺ 重置视图"));
+    actReset->setToolTip(QStringLiteral("解锁缩放/平移并重新自动适配范围（双击图表同效）"));
+    connect(actReset, &QAction::triggered, this, [this]() {
+        if (m_chart) m_chart->resetView();
+    });
+    m_chartBar->addSeparator();
+
+    m_btnSeg = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    connect(m_btnSeg, &QPushButton::clicked, this, &MainWindow::toggleSegments);
+    m_chartBar->addWidget(m_btnSeg);
+
+    m_btnOverlay = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    connect(m_btnOverlay, &QPushButton::clicked, this, &MainWindow::toggleOverlay);
+    m_chartBar->addWidget(m_btnOverlay);
+
+    m_btnEsPos = makeBtn(QString(), theme::BORDER, theme::C_HOVER);
+    connect(m_btnEsPos, &QPushButton::clicked, this, &MainWindow::toggleEsPos);
+    m_chartBar->addWidget(m_btnEsPos);
+
+    auto* hint = new QLabel(QStringLiteral("　滚轮缩放 · 拖拽平移 · 双击重置"), m_chartBar);
+    hint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;padding-left:6px;")
+                        .arg(theme::C_DIM.name()));
+    m_chartBar->addWidget(hint);
+
+    auto* spacer = new QWidget(m_chartBar);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_chartBar->addWidget(spacer);
+
+    m_lockLabel = new QLabel(QString(), m_chartBar);
+    m_lockLabel->setStyleSheet(QStringLiteral("color:#f0a500;font-weight:bold;font-size:9pt;padding-right:6px;"));
+    m_chartBar->addWidget(m_lockLabel);
+
+    v->addWidget(m_chartBar);
+
+    m_chart = new ChartView(&m_groups, m_recorder, central);
+    m_chart->setMinimumHeight(360);
     connect(m_chart, &ChartView::lockChanged, this, &MainWindow::onLockChanged);
-    m_rootLayout->addWidget(m_chart, 1);
+    v->addWidget(m_chart, 1);
+
+    setCentralWidget(central);
+}
+
+// ── 停靠面板 ----------------------------------------------------
+
+QDockWidget* MainWindow::makeDock(const QString& title, QWidget* content, const QString& objName) {
+    auto* d = new QDockWidget(title, this);
+    d->setObjectName(objName);        // saveState/restoreState 依赖 objectName
+    d->setWidget(content);
+    d->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+    d->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
+                   | QDockWidget::DockWidgetClosable);
+    d->setStyleSheet(QStringLiteral(
+        "QDockWidget{color:%1;titlebar-close-icon:none;}"
+        "QDockWidget::title{background-color:%2;padding:5px 8px;font-weight:bold;font-size:10pt;}")
+        .arg(theme::C_TEXT.name(), theme::PANEL.name()));
+    return d;
+}
+
+void MainWindow::buildDocks() {
+    m_dockLink   = makeDock(QStringLiteral("🔗 链路状态"), buildLinkPanel(),   QStringLiteral("dockLink"));
+    m_dockGroups = makeDock(QStringLiteral("📊 数据组"),   buildGroupsPanel(), QStringLiteral("dockGroups"));
+    m_dockSeams  = makeDock(QStringLiteral("🧲 焊缝"),     buildSeamPanel(),   QStringLiteral("dockSeams"));
+    m_dockValues = makeDock(QStringLiteral("📈 数值"),     buildValuePanel(),  QStringLiteral("dockValues"));
+    m_dockDetail = makeDock(QStringLiteral("🔍 详情"),     buildDetailPanel(), QStringLiteral("dockDetail"));
+    m_dockLog    = makeDock(QStringLiteral("📝 日志"),     buildLogPanel(),    QStringLiteral("dockLog"));
+
+    addDockWidget(Qt::LeftDockWidgetArea, m_dockLink);
+    addDockWidget(Qt::LeftDockWidgetArea, m_dockGroups);
+    addDockWidget(Qt::LeftDockWidgetArea, m_dockSeams);
+    addDockWidget(Qt::RightDockWidgetArea, m_dockValues);
+    addDockWidget(Qt::RightDockWidgetArea, m_dockDetail);
+    addDockWidget(Qt::BottomDockWidgetArea, m_dockLog);
+    m_dockLog->hide();
+
+    // 默认列宽/高度分配放在事件循环启动后做（构造期设置会被首次布局覆盖），
+    // 有保存过的布局时由 restoreUiState() 优先恢复。
+
+    // 视图菜单：面板显隐（QDockWidget 自带 toggleViewAction）+ 恢复默认布局
+    if (m_viewMenu) {
+        QAction* a = m_dockLink->toggleViewAction();   a->setShortcut(QKeySequence(QStringLiteral("Ctrl+1")));
+        m_viewMenu->addAction(a);
+        a = m_dockGroups->toggleViewAction();          a->setShortcut(QKeySequence(QStringLiteral("Ctrl+2")));
+        m_viewMenu->addAction(a);
+        a = m_dockSeams->toggleViewAction();           a->setShortcut(QKeySequence(QStringLiteral("Ctrl+3")));
+        m_viewMenu->addAction(a);
+        a = m_dockValues->toggleViewAction();          a->setShortcut(QKeySequence(QStringLiteral("Ctrl+4")));
+        m_viewMenu->addAction(a);
+        a = m_dockDetail->toggleViewAction();          a->setShortcut(QKeySequence(QStringLiteral("Ctrl+5")));
+        m_viewMenu->addAction(a);
+        a = m_dockLog->toggleViewAction();             a->setShortcut(QKeySequence(QStringLiteral("Ctrl+6")));
+        m_viewMenu->addAction(a);
+        m_viewMenu->addSeparator();
+        auto* actDefault = m_viewMenu->addAction(QStringLiteral("恢复默认布局"));
+        actDefault->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+        connect(actDefault, &QAction::triggered, this, [this]() {
+            for (QDockWidget* d : {m_dockLink, m_dockGroups, m_dockSeams, m_dockValues, m_dockDetail}) {
+                d->setFloating(false);
+            }
+            m_dockLog->setFloating(false);
+            addDockWidget(Qt::LeftDockWidgetArea, m_dockLink);
+            addDockWidget(Qt::LeftDockWidgetArea, m_dockGroups);
+            addDockWidget(Qt::LeftDockWidgetArea, m_dockSeams);
+            addDockWidget(Qt::RightDockWidgetArea, m_dockValues);
+            addDockWidget(Qt::RightDockWidgetArea, m_dockDetail);
+            addDockWidget(Qt::BottomDockWidgetArea, m_dockLog);
+            m_dockLink->show();
+            m_dockGroups->show();
+            m_dockSeams->show();
+            m_dockValues->show();
+            m_dockDetail->show();
+            m_dockLog->hide();
+            applyDefaultDockLayout();
+        });
+    }
+}
+
+void MainWindow::applyDefaultDockLayout() {
+    // 左列三块的高度分配 + 左右两列的宽度
+    resizeDocks({m_dockLink, m_dockGroups, m_dockSeams}, {170, 400, 240}, Qt::Vertical);
+    resizeDocks({m_dockValues, m_dockDetail}, {250, 430}, Qt::Vertical);
+    resizeDocks({m_dockLink, m_dockGroups, m_dockSeams}, {300, 300, 300}, Qt::Horizontal);
+    resizeDocks({m_dockValues, m_dockDetail}, {320, 320}, Qt::Horizontal);
+}
+
+// 🔗 链路状态：端口 / 监听结果 / 本机地址 / KUKA 连接（常驻，现场排查第一步）
+QWidget* MainWindow::buildLinkPanel() {
+    auto* w = new QWidget(this);
+    auto* v = new QVBoxLayout(w);
+    v->setContentsMargins(10, 8, 10, 8);
+    v->setSpacing(4);
+    m_linkPanel = new QLabel(QString(), w);
+    m_linkPanel->setWordWrap(true);
+    m_linkPanel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_linkPanel->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_TEXT.name()));
+    v->addWidget(m_linkPanel);
+    v->addStretch();
+    return w;
+}
+
+// 🔍 详情：选中焊缝的检测结果（段列表在 S4 补）
+QWidget* MainWindow::buildDetailPanel() {
+    auto* w = new QWidget(this);
+    auto* v = new QVBoxLayout(w);
+    v->setContentsMargins(10, 8, 10, 8);
+    v->setSpacing(6);
+
+    auto* title = new QLabel(QStringLiteral("检测结果"), w);
+    title->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;")
+                         .arg(theme::C_PASS.name()));
+    v->addWidget(title);
+
+    m_detectLabel = new QLabel(QString(), w);
+    m_detectLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;font-weight:bold;")
+                                 .arg(theme::C_PASS.name()));
+    m_detectLabel->setWordWrap(true);
+    m_detectLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    v->addWidget(m_detectLabel);
+
+    m_seamHint = new QLabel(QString(), w);
+    m_seamHint->setWordWrap(true);
+    m_seamHint->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
+    v->addWidget(m_seamHint);
+    v->addStretch();
+    return w;
+}
+
+// 📝 日志：把状态消息按时间戳累积下来（默认隐藏，Ctrl+6 唤出）
+QWidget* MainWindow::buildLogPanel() {
+    auto* w = new QWidget(this);
+    auto* v = new QVBoxLayout(w);
+    v->setContentsMargins(6, 6, 6, 6);
+    v->setSpacing(4);
+    m_logView = new QPlainTextEdit(w);
+    m_logView->setReadOnly(true);
+    m_logView->setMaximumBlockCount(800);
+    m_logView->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit{background-color:%1;color:%2;border:1px solid %3;"
+        "font-family:Consolas,monospace;font-size:9pt;}")
+        .arg(theme::BG.name(), theme::C_TEXT.name(), theme::BORDER.name()));
+    v->addWidget(m_logView);
+    return w;
 }
 
 // ── 组管理面板 ──────────────────────────────────────────────────
@@ -771,16 +1010,19 @@ void MainWindow::refreshGroupsPanel() {
     m_cards.clear();
 
     int n = m_groups.size();
-    m_groupsHint->setText(QStringLiteral("  %1 / %2 组已载入%3")
+    // 面板只有 ~300px 宽，长文本会把整列撑开 —— 目录/上限这类细节放到 tooltip
+    m_groupsHint->setText(QStringLiteral("%1 / %2 组%3")
         .arg(n).arg(MAX_GROUPS)
-        .arg(n < MAX_GROUPS
-             ? QStringLiteral("  ·  自动存档目录：%1").arg(todayArchiveDir())
-             : QStringLiteral("  ·  已达上限，请先删除一组再添加")));
+        .arg(n < MAX_GROUPS ? QString() : QStringLiteral("　已达上限")));
+    m_groupsHint->setToolTip(n < MAX_GROUPS
+        ? QStringLiteral("自动存档目录：%1").arg(todayArchiveDir())
+        : QStringLiteral("已达 %1 组上限，请先删除一组再添加").arg(MAX_GROUPS));
 
     if (m_groups.isEmpty()) {
         auto* lbl = new QLabel(
             QStringLiteral("暂无数据组  —  点击上方\"添加数据组\"载入 CSV 文件，或按\"启动\"开始实时采集"),
             m_cardsWidget);
+        lbl->setWordWrap(true);     // 长句会把停靠面板整列撑宽
         lbl->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
         m_cardsLayout->addWidget(lbl);
         m_cardsLayout->addStretch();
@@ -874,7 +1116,7 @@ void MainWindow::refreshGroupsPanel() {
         stylePosButton(btnPos, g);
         styleForceButton(btnForce, g);
 
-        m_cardsLayout->addWidget(card, 1);
+        m_cardsLayout->addWidget(card);
         m_cards.insert(g, CardWidgets{btnPos, btnForce, ptsLbl});
     }
     m_cardsLayout->addStretch();
@@ -982,7 +1224,19 @@ void MainWindow::toggleGroupForce(int idx) {
 // ── 状态辅助 ────────────────────────────────────────────────────
 
 void MainWindow::setStatus(const QString& msg) {
-    m_statusLabel->setText(msg);
+    if (m_statusLabel) {
+        m_statusLabel->setText(msg);
+    }
+    logMessage(msg);
+}
+
+// 状态消息同时写进日志面板（带时间戳），便于回看"刚才那条提示是什么"
+void MainWindow::logMessage(const QString& msg) {
+    if (!m_logView) {
+        return;
+    }
+    m_logView->appendPlainText(QStringLiteral("[%1] %2")
+                                   .arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss")), msg));
 }
 
 void MainWindow::setRecState(const QString& text, const QColor& c) {
@@ -1618,6 +1872,7 @@ void MainWindow::loadSettings() {
     m_arch.timeoutMin = s.value(QStringLiteral("part/timeoutMin"), PART_TIMEOUT_MIN_DEFAULT).toInt();
     m_arch.autoArm = s.value(QStringLiteral("run/autoArm"), true).toBool();
     m_arch.rule = PartRule(s.value(QStringLiteral("part/rule"), int(PartRule::PerCycle)).toInt());
+    restoreUiState();       // 窗口几何 + 停靠面板布局
 }
 
 void MainWindow::saveSettings() {
@@ -1632,7 +1887,45 @@ void MainWindow::saveSettings() {
     s.setValue(QStringLiteral("part/timeoutMin"), m_arch.timeoutMin);
     s.setValue(QStringLiteral("part/rule"), int(m_arch.rule));
     s.setValue(QStringLiteral("run/autoArm"), m_arch.autoArm);
+    saveUiState();          // 窗口几何 + 停靠面板布局
     s.sync();
+}
+
+// ── 窗口/面板布局持久化 ─────────────────────────────────────────
+// QDockWidget 的浮动位置、显隐、左右列宽度都由 saveState()/restoreState() 一起记住。
+
+void MainWindow::saveUiState() {
+    QSettings s(QSettings::IniFormat, QSettings::UserScope,
+                QStringLiteral("KRLmonitor"), QStringLiteral("settings"));
+    s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+    s.setValue(QStringLiteral("ui/dockVersion"), kDockStateVersion);
+    s.setValue(QStringLiteral("ui/layout"), saveState(kDockStateVersion));
+}
+
+void MainWindow::restoreUiState() {
+    QSettings s(QSettings::IniFormat, QSettings::UserScope,
+                QStringLiteral("KRLmonitor"), QStringLiteral("settings"));
+    const QByteArray geo = s.value(QStringLiteral("ui/geometry")).toByteArray();
+    if (!geo.isEmpty()) {
+        restoreGeometry(geo);
+    }
+    // 面板结构改过（版本号不一致）就忽略旧布局，避免恢复出半截界面
+    if (s.value(QStringLiteral("ui/dockVersion")).toInt() != kDockStateVersion) {
+        QTimer::singleShot(0, this, [this]() { applyDefaultDockLayout(); });
+        return;
+    }
+    const QByteArray st = s.value(QStringLiteral("ui/layout")).toByteArray();
+    if (!st.isEmpty()) {
+        if (restoreState(st, kDockStateVersion)) {
+            return;               // 恢复成功：用户自己的布局优先
+        }
+    }
+    QTimer::singleShot(0, this, [this]() { applyDefaultDockLayout(); });
+}
+
+void MainWindow::closeEvent(QCloseEvent* e) {
+    saveSettings();         // 含 saveUiState()：退出时记住窗口与面板布局
+    QMainWindow::closeEvent(e);
 }
 
 // 连接指示灯：把"是否在监听 / KUKA 是否连上 / 本机 IP 是多少"三件事常驻在工具栏右侧。
@@ -1690,20 +1983,34 @@ void MainWindow::refreshLinkLabel() {
     if (!m_linkLabel) {
         return;
     }
+    // 状态栏只放最短的一行（永远可见）；🔗 链路状态面板里放完整信息
     QString txt;
+    QString state;
     QColor c = theme::C_DIM;
     if (!m_listenOk) {
-        txt = QStringLiteral("🔌 端口 %1 ✗ 监听失败").arg(LISTEN_PORT);
+        state = QStringLiteral("✗ 监听失败");
+        txt = QStringLiteral("✗ 端口 %1 监听失败").arg(LISTEN_PORT);
         c = theme::C_REC;
     } else if (m_server && m_server->hasClient()) {
-        txt = QStringLiteral("🔌 端口 %1 ● KUKA 已连接").arg(LISTEN_PORT);
+        state = QStringLiteral("● KUKA 已连接");
+        txt = QStringLiteral("● 端口 %1 已连接").arg(LISTEN_PORT);
         c = theme::C_OK;
     } else {
-        txt = QStringLiteral("🔌 端口 %1 ○ 等待 KUKA 连接　本机 %2").arg(LISTEN_PORT).arg(m_localIps);
+        state = QStringLiteral("○ 等待 KUKA 连接");
+        txt = QStringLiteral("○ 端口 %1 等待连接").arg(LISTEN_PORT);
         c = theme::C_WARN_HI;
     }
     m_linkLabel->setText(txt);
     m_linkLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;font-size:10pt;").arg(c.name()));
+
+    if (m_linkPanel) {
+        const QString err = (!m_listenOk && m_server) ? m_server->lastError() : QString();
+        m_linkPanel->setText(QStringLiteral("状态：%1\n端口：%2\n本机：%3%4")
+                                 .arg(state).arg(LISTEN_PORT).arg(m_localIps)
+                                 .arg(err.isEmpty()
+                                          ? QString()
+                                          : QStringLiteral("\n错误：%1").arg(err)));
+    }
     m_linkLabel->setToolTip(QStringLiteral(
         "KUKA 控制器上 EthernetKRL\\ECMMonitor\\config.xml 里的 <IP> 必须等于这里显示的本机地址，"
         "<PORT> 必须是 %1。\n若此处显示「监听失败」，说明端口被占用或权限被拦。").arg(LISTEN_PORT));

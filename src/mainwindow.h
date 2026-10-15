@@ -17,9 +17,15 @@ class QPushButton;
 class QButtonGroup;
 class QVBoxLayout;
 class QHBoxLayout;
+class QGridLayout;
+class QMenu;
 class QWidget;
 class QFrame;
 class QTimer;
+class QDockWidget;
+class QToolBar;
+class QPlainTextEdit;
+class QCloseEvent;
 class ChartView;
 class TcpServer;
 
@@ -49,6 +55,10 @@ public:
     MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    // 退出时保存窗口/面板布局
+    void closeEvent(QCloseEvent* e) override;
+
 private slots:
     void onTick();
     void onStart();
@@ -70,12 +80,23 @@ private slots:
 
 private:
     // 构建
-    void buildToolbar();
-    void buildZoomBar();
-    void buildGroupsPanel();
-    void buildSeamPanel();
-    void buildValueBar();
-    void buildChart();
+    void buildMenuBar();
+    void buildMainToolBar();
+    void buildStatusBar();
+    void buildDocks();
+    void buildChartArea();                 // 中央区：图表工具条 + 图表
+    QWidget* buildZoomControls();          // 缩放/视图控件（塞进主工具条）
+    QWidget* buildGroupsPanel();
+    QWidget* buildSeamPanel();
+    QWidget* buildValuePanel();
+    QWidget* buildDetailPanel();
+    QWidget* buildLinkPanel();             // 链路状态（端口/本机 IP/连接）
+    QWidget* buildLogPanel();
+    QDockWidget* makeDock(const QString& title, QWidget* content, const QString& objName);
+    void applyDefaultDockLayout();          // 默认列宽/高度分配（首次运行或"恢复默认布局"）
+    void logMessage(const QString& msg);   // 状态消息 → 状态栏 + 日志面板
+    void saveUiState();
+    void restoreUiState();
     void refreshGroupsPanel();
     void refreshSeamPanel();          // 刷新焊缝栏（chip 状态 + 检测结果行）
     QString seamSummary(const DataGroup& g) const;
@@ -135,15 +156,23 @@ private:
     bool m_showMonitor = true;
 
     // UI
-    QVBoxLayout* m_rootLayout = nullptr;
+    QDockWidget* m_dockLink = nullptr;      // 🔗 链路状态
+    QDockWidget* m_dockGroups = nullptr;    // 📊 数据组
+    QDockWidget* m_dockSeams = nullptr;     // 🧲 焊缝
+    QDockWidget* m_dockValues = nullptr;    // 📈 数值
+    QDockWidget* m_dockDetail = nullptr;    // 🔍 详情
+    QDockWidget* m_dockLog = nullptr;       // 📝 日志（默认隐藏）
+    QToolBar* m_chartBar = nullptr;         // 图表工具条
+    QPlainTextEdit* m_logView = nullptr;
+    QLabel* m_linkPanel = nullptr;          // 链路状态面板里的多行详情
     QPushButton* m_btnStart = nullptr;
     QPushButton* m_btnPause = nullptr;
     QPushButton* m_btnSeg = nullptr;
     QPushButton* m_btnOverlay = nullptr;
     QPushButton* m_btnEsPos = nullptr;
     QPushButton* m_btnAutoPause = nullptr;
-    QLabel* m_statusLabel = nullptr;
-    QLabel* m_linkLabel = nullptr;     // 常驻：端口监听 / KUKA 连接 / 本机 IP
+    QLabel* m_statusLabel = nullptr;   // 状态栏右侧：最近一条消息
+    QLabel* m_linkLabel = nullptr;     // 状态栏左侧常驻：端口监听 / KUKA 连接
     QString m_localIps;
     bool m_listenOk = false;
     int m_tickCount = 0;
@@ -160,7 +189,8 @@ private:
 
     QLabel* m_seamHint = nullptr;
     QWidget* m_seamWidget = nullptr;
-    QHBoxLayout* m_seamLayout = nullptr;
+    QGridLayout* m_seamLayout = nullptr;
+    QMenu* m_viewMenu = nullptr;       // 视图菜单（面板显隐在 buildDocks() 里补齐）
     QLabel* m_seamContext = nullptr;   // 数值栏：焊缝 k/8 · 阶段 · 第 n 遍
     QLabel* m_detectLabel = nullptr;   // 焊缝栏右侧：检测结果（高度/基材/错边/轮次）
     QHash<int, QPushButton*> m_seamChips;   // 焊缝号 -> chip
@@ -177,6 +207,6 @@ private:
 
     QLabel* m_groupsHint = nullptr;
     QWidget* m_cardsWidget = nullptr;
-    QHBoxLayout* m_cardsLayout = nullptr;
+    QVBoxLayout* m_cardsLayout = nullptr;   // 组卡片竖排（放进滚动区）
     QHash<DataGroup*, CardWidgets> m_cards;
 };
