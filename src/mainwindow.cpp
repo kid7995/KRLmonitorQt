@@ -11,6 +11,7 @@
 #include <QRadioButton>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QDockWidget>
 #include <QStatusBar>
 #include <QMenuBar>
@@ -330,11 +331,6 @@ void MainWindow::buildMainToolBar() {
     connect(m_btnPause, &QPushButton::clicked, this, &MainWindow::onPause);
     tb->addWidget(m_btnPause);
 
-    m_btnAutoPause = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("stop"));
-    m_btnAutoPause->setToolTip(QStringLiteral("打磨完成后自动冻结暂停"));
-    connect(m_btnAutoPause, &QPushButton::clicked, this, &MainWindow::toggleAutoPause);
-    tb->addWidget(m_btnAutoPause);
-
     tb->addSeparator();
 
     auto* btnSave = makeBtn(QStringLiteral("保存"), BtnKind::Ghost,
@@ -357,17 +353,41 @@ void MainWindow::buildMainToolBar() {
     tb->addSeparator();
 
     // ── 收纳：面板显隐 + 低频命令收进"更多"菜单 ──────────────
-    auto* btnPanels = makeBtn(QStringLiteral("面板"), BtnKind::Ghost, QStringLiteral("panels"));
+    // 工具条上的下拉按钮用 QToolButton（工具条专用），文字+图标会按内容自适应宽度，
+    // 不会像 QPushButton 那样被相邻控件挤到裁字。
+    auto* btnPanels = new QToolButton(tb);
+    btnPanels->setText(QStringLiteral("面板"));
+    btnPanels->setIcon(icons::get(QStringLiteral("panels"), theme::C_INFO));
+    btnPanels->setIconSize(QSize(16, 16));
+    btnPanels->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btnPanels->setPopupMode(QToolButton::InstantPopup);
+    btnPanels->setCursor(Qt::PointingHandCursor);
     btnPanels->setToolTip(QStringLiteral("显示/隐藏停靠面板（Ctrl+1~6）"));
     auto* panelMenu = new QMenu(btnPanels);
     btnPanels->setMenu(panelMenu);
     m_panelMenu = panelMenu;        // buildDocks() 里补上各面板的 toggleViewAction
     tb->addWidget(btnPanels);
 
-    auto* btnMore = makeBtn(QString(), BtnKind::Ghost, QStringLiteral("more"));
+    auto* btnMore = new QToolButton(tb);
+    btnMore->setText(QStringLiteral("更多"));
+    btnMore->setIcon(icons::get(QStringLiteral("more"), theme::C_TEXT));
+    btnMore->setIconSize(QSize(16, 16));
+    btnMore->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btnMore->setPopupMode(QToolButton::InstantPopup);
+    btnMore->setCursor(Qt::PointingHandCursor);
     btnMore->setToolTip(QStringLiteral("更多命令"));
     auto* moreMenu = new QMenu(btnMore);
     btnMore->setMenu(moreMenu);
+    // 低频的模式开关也收在这里（"完成后暂停"设置一次就很少动）
+    m_actAutoPause = moreMenu->addAction(QStringLiteral("打磨完成后自动暂停"));
+    m_actAutoPause->setCheckable(true);
+    m_actAutoPause->setChecked(m_autoPause);
+    connect(m_actAutoPause, &QAction::toggled, this, [this](bool on) {
+        if (on != m_autoPause) {
+            toggleAutoPause();
+        }
+    });
+    moreMenu->addSeparator();
     QAction* a = moreMenu->addAction(QStringLiteral("✂ 新件（手工切分）"));
     a->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
     connect(a, &QAction::triggered, this, &MainWindow::onNewPart);
@@ -1387,7 +1407,9 @@ void MainWindow::syncToggles() {
     styleToggle(m_btnSeg, m_showSegments, QStringLiteral("┊ 道次分割"));
     styleToggle(m_btnOverlay, m_overlayMode, QStringLiteral("≡ 叠道对比"));
     styleToggle(m_btnEsPos, m_showEsPos, QStringLiteral("⌐ ESpos"));
-    styleToggle(m_btnAutoPause, m_autoPause, QStringLiteral("⏹ 完成后暂停"));
+    if (m_actAutoPause) {
+        m_actAutoPause->setChecked(m_autoPause);   // 状态与菜单项保持一致
+    }
     if (m_btnPhase) {
         styleToggle(m_btnPhase, m_phaseView != PhaseView::All, phaseViewLabel(m_phaseView));
     }

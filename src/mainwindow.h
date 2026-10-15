@@ -178,7 +178,7 @@ private:
     QPushButton* m_btnSeg = nullptr;
     QPushButton* m_btnOverlay = nullptr;
     QPushButton* m_btnEsPos = nullptr;
-    QPushButton* m_btnAutoPause = nullptr;
+    QAction* m_actAutoPause = nullptr;   // 完成后自动暂停（收在"更多"菜单里）
     QLabel* m_statusLabel = nullptr;   // 状态栏右侧：最近一条消息
     QLabel* m_linkLabel = nullptr;     // 状态栏左侧常驻：端口监听 / KUKA 连接
     QString m_localIps;
