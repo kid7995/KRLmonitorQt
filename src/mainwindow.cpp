@@ -19,6 +19,7 @@
 #include <QAction>
 #include <QKeySequence>
 #include <QPlainTextEdit>
+#include <QClipboard>
 #include <QScrollArea>
 #include <QCloseEvent>
 #include <QMessageBox>
@@ -480,6 +481,10 @@ void MainWindow::buildStatusBar() {
     m_statusLabel = new QLabel(QStringLiteral("◎ 正在启动…"), sb);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-size:10pt;padding:0 10px;")
                                  .arg(theme::C_DIM.name()));
+    m_statPoints = new QLabel(QStringLiteral("0 点 · 0 组"), sb);
+    m_statPoints->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;padding:0 10px;")
+                                .arg(theme::C_DIM.name()));
+    sb->addPermanentWidget(m_statPoints);
     sb->addPermanentWidget(m_statusLabel, 1);
 }
 
@@ -1136,6 +1141,13 @@ void MainWindow::refreshSegmentList() {
     m_segList->clear();
     const int gi = refGroupIdx();
     if (gi < 0 || gi >= m_groups.size()) {
+        auto* ph = new QListWidgetItem(QStringLiteral("（暂无数据组）"), m_segList);
+        ph->setFlags(Qt::NoItemFlags);
+        return;
+    }
+    if (m_groups[gi]->seam.segments.isEmpty()) {
+        auto* ph = new QListWidgetItem(QStringLiteral("（本组没有段信息：旧 CSV 或尚无数据）"), m_segList);
+        ph->setFlags(Qt::NoItemFlags);
         return;
     }
     const DataGroup* g = m_groups[gi];
@@ -1161,6 +1173,27 @@ QWidget* MainWindow::buildLogPanel() {
     auto* v = new QVBoxLayout(w);
     v->setContentsMargins(6, 6, 6, 6);
     v->setSpacing(4);
+
+    // 面板工具行：清空 / 复制 / 自动滚动（日志是"回看刚才发生了什么"用的）
+    auto* bar = new QHBoxLayout();
+    auto* btnClearLog = makeBtn(QStringLiteral("清空"), BtnKind::Ghost);
+    connect(btnClearLog, &QPushButton::clicked, this, [this]() {
+        if (m_logView) {
+            m_logView->clear();
+        }
+    });
+    bar->addWidget(btnClearLog);
+    auto* btnCopyLog = makeBtn(QStringLiteral("复制全部"), BtnKind::Ghost);
+    connect(btnCopyLog, &QPushButton::clicked, this, [this]() {
+        if (m_logView) {
+            QApplication::clipboard()->setText(m_logView->toPlainText());
+            setStatus(QStringLiteral("日志已复制到剪贴板（%1 行）").arg(m_logView->blockCount()));
+        }
+    });
+    bar->addWidget(btnCopyLog);
+    bar->addStretch();
+    v->addLayout(bar);
+
     m_logView = new QPlainTextEdit(w);
     m_logView->setReadOnly(true);
     m_logView->setMaximumBlockCount(800);
@@ -1181,6 +1214,15 @@ void MainWindow::refreshGroupsPanel() {
         delete item;
     }
     m_groupRows.clear();
+    if (m_statPoints) {
+        int pts = 0;
+        for (DataGroup* g : m_groups) {
+            pts += g->len();
+        }
+        m_statPoints->setText(QStringLiteral("%1 点 · %2 组")
+                                  .arg(theme::formatThousands(pts))
+                                  .arg(m_groups.size()));
+    }
 
     int n = m_groups.size();
     // 面板只有 ~300px 宽，长文本会把整列撑开 —— 目录/上限这类细节放到 tooltip
@@ -1193,7 +1235,8 @@ void MainWindow::refreshGroupsPanel() {
 
     if (m_groups.isEmpty()) {
         auto* lbl = new QLabel(
-            QStringLiteral("暂无数据组  —  点击上方\"添加数据组\"载入 CSV 文件，或按\"启动\"开始实时采集"),
+            QStringLiteral("暂无数据组\n\n· 工具条『添加组』载入 .ecmb / CSV 存档\n"
+                           "· 或点『开始监听』等待 KRL 实时数据"),
             m_cardsWidget);
         lbl->setWordWrap(true);     // 长句会把停靠面板整列撑宽
         lbl->setStyleSheet(QStringLiteral("color:%1;font-size:9pt;").arg(theme::C_DIM.name()));
@@ -1501,9 +1544,9 @@ void MainWindow::setRecState(const QString& text, const QColor& c) {
 }
 
 void MainWindow::syncToggles() {
-    styleToggle(m_btnSeg, m_showSegments, QStringLiteral("┊ 道次分割"));
-    styleToggle(m_btnOverlay, m_overlayMode, QStringLiteral("≡ 叠道对比"));
-    styleToggle(m_btnEsPos, m_showEsPos, QStringLiteral("⌐ ESpos"));
+    styleToggle(m_btnSeg, m_showSegments, QStringLiteral("道次分割"));
+    styleToggle(m_btnOverlay, m_overlayMode, QStringLiteral("叠道对比"));
+    styleToggle(m_btnEsPos, m_showEsPos, QStringLiteral("ESpos"));
     if (m_actAutoPause) {
         m_actAutoPause->setChecked(m_autoPause);   // 状态与菜单项保持一致
     }

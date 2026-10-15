@@ -185,6 +185,7 @@ private:
     QAction* m_actAutoPause = nullptr;   // 完成后自动暂停（收在"更多"菜单里）
     QLabel* m_statusLabel = nullptr;   // 状态栏右侧：最近一条消息
     QLabel* m_linkLabel = nullptr;     // 状态栏左侧常驻：端口监听 / KUKA 连接
+    QLabel* m_statPoints = nullptr;    // 状态栏右侧常驻：点数 · 组数
     QString m_localIps;
     bool m_listenOk = false;
     int m_tickCount = 0;
