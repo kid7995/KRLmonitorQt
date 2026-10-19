@@ -41,7 +41,16 @@ $buildRoot = Resolve-FullPath -Path $BuildDir -BaseDirectory $projectRoot
 $outputRoot = Resolve-FullPath -Path $OutputDir -BaseDirectory $projectRoot
 $distRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "dist"))
 
+# 兼容两种生成器：
+#   VS 多配置（Visual Studio 16 2019）→ <build>/Release/KRLmonitor.exe
+#   Ninja 单配置（-DCMAKE_BUILD_TYPE=Release）→ <build>/KRLmonitor.exe
 $sourceExe = Join-Path (Join-Path $buildRoot $Configuration) "KRLmonitor.exe"
+if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+    $flat = Join-Path $buildRoot "KRLmonitor.exe"
+    if (Test-Path -LiteralPath $flat -PathType Leaf) {
+        $sourceExe = $flat
+    }
+}
 $windeployqt = Join-Path $QtBin "windeployqt.exe"
 
 if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
@@ -110,6 +119,25 @@ $hasCompilerRuntime = @("vcruntime140.dll", "msvcp140.dll", "vc_redist.x64.exe")
     Select-Object -First 1
 if (-not $hasCompilerRuntime) {
     Write-Warning "windeployqt 未复制 MSVC 运行库。请在目标机安装 Microsoft Visual C++ Redistributable，或从已初始化 Visual Studio 环境的终端重新运行脚本。"
+}
+
+# 顺带把 MSVC 运行时 DLL 直接放进包里：目标机即使没装过 VC++ 运行库也能直接双击运行
+# （vc_redist.x64.exe 仍保留，作为兜底修复手段）
+if (-not [string]::IsNullOrWhiteSpace($env:VCToolsRedistDir)) {
+    $crtRoot = Join-Path $env:VCToolsRedistDir "x64"
+    if (Test-Path -LiteralPath $crtRoot -PathType Container) {
+        $crtDir = Get-ChildItem -LiteralPath $crtRoot -Directory |
+            Where-Object { $_.Name -like "Microsoft.VC*.CRT" } |
+            Select-Object -First 1
+        if ($crtDir) {
+            foreach ($dll in @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll")) {
+                $src = Join-Path $crtDir.FullName $dll
+                if (Test-Path -LiteralPath $src -PathType Leaf) {
+                    Copy-Item -LiteralPath $src -Destination (Join-Path $outputRoot $dll) -Force
+                }
+            }
+        }
+    }
 }
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "runtime-instructions.txt") -Destination (Join-Path $outputRoot "运行说明.txt") -Force
