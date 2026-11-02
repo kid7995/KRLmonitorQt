@@ -1154,7 +1154,10 @@ void MainWindow::refreshSegmentList() {
     const DataGroup* g = m_groups[gi];
     for (int i = 0; i < g->seam.segments.size(); ++i) {
         const Segment& s = g->seam.segments[i];
-        QString txt = seamPhaseLabel(s.kind);
+        // 老版单工位程序没有负数标记，整段都是"未标记"——直接写清楚，
+        // 别让段列表里出现一排"—"让人以为数据坏了。
+        QString txt = (s.kind == SeamPhase::None) ? QStringLiteral("未标记段")
+                                                  : seamPhaseLabel(s.kind);
         if (s.seam > 0 && s.kind != SeamPhase::None) {
             txt += QStringLiteral(" · 焊缝%1").arg(s.seam);
         }
