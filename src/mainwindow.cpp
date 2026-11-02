@@ -1281,19 +1281,33 @@ void MainWindow::refreshGroupsPanel() {
         // 组标签只留短标识，状态另用一个圆点表达（红=记录中 / 橙=不完整 / 绿=已存档）
         QString badge = QStringLiteral("组%1").arg(g->paletteIdx + 1);
         QString dotColor = theme::C_DIM.name();
-        QString dotTip = QStringLiteral("未处理");
+        // 保存状态：未保存 / 已保存 / 已保存但有新增（直播组保存后又录到点）
+        const bool hasNewAfterSave = g->saved && g->savedPointCount >= 0 && g->len() > g->savedPointCount;
+        QString saveLabel = QStringLiteral("未保存");
+        if (g->saved) {
+            saveLabel = hasNewAfterSave
+                ? QStringLiteral("已保存 · 有新增")
+                : QStringLiteral("已保存 %1").arg(g->savedAt.isValid()
+                                                       ? g->savedAt.toString(QStringLiteral("HH:mm"))
+                                                       : QString());
+        }
+        QString dotTip = saveLabel;
         if (g->live) {
             dotColor = theme::C_REC.name();
             dotTip = QStringLiteral("正在记录");
+        } else if (hasNewAfterSave) {
+            dotColor = theme::C_WARN_HI.name();
+        } else if (g->saved) {
+            dotColor = theme::C_OK.name();
         } else if (g->incomplete) {
             dotColor = theme::C_WARN_HI.name();
             dotTip = QStringLiteral("断线/异常封存，数据可能不完整");
-        } else if (g->saved) {
-            dotColor = theme::C_OK.name();
-            dotTip = QStringLiteral("已存档：%1").arg(QFileInfo(g->savedPath).fileName());
         }
         if (!g->savedPath.isEmpty()) {
-            card->setToolTip(QStringLiteral("已存档：%1").arg(g->savedPath));
+            card->setToolTip(QStringLiteral("%1\n%2\n%3")
+                                 .arg(saveLabel,
+                                      g->savedFormat.isEmpty() ? QStringLiteral("—") : g->savedFormat,
+                                      g->savedPath));
         } else if (!g->partLabel.isEmpty()) {
             card->setToolTip(g->partLabel);
         }
@@ -1345,12 +1359,16 @@ void MainWindow::refreshGroupsPanel() {
         auto* metaRow = new QHBoxLayout();
         metaRow->setSpacing(6);
         auto* ptsLbl = new QLabel(g->times.isEmpty()
-                                      ? QStringLiteral("采集中…")
-                                      : QStringLiteral("%1 pts · %2 道")
+                                      ? QStringLiteral("采集中… · %1").arg(saveLabel)
+                                      : QStringLiteral("%1 pts · %2 道 · %3")
                                             .arg(theme::formatThousands(g->len()))
-                                            .arg(g->passes.size()),
+                                            .arg(g->passes.size())
+                                            .arg(saveLabel),
                                   card);
-        ptsLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(theme::C_DIM.name()));
+        const QString saveColor = !g->saved ? theme::C_DIM.name()
+                                : hasNewAfterSave ? theme::C_WARN.name()
+                                                  : theme::C_OK.name();
+        ptsLbl->setStyleSheet(QStringLiteral("color:%1;font-size:8pt;").arg(saveColor));
         metaRow->addWidget(ptsLbl);
         metaRow->addStretch();
         auto* btnPos = new QPushButton(QString(), card);
@@ -1797,27 +1815,66 @@ void MainWindow::onSave() {
         return;
     }
 
-    QString base = g->name;
-    base = sanitizeFileName(base);
-    QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("保存波形数据"),
-        QDir(todayArchiveDir()).filePath(archiveNameFor(*g) + QStringLiteral(".ecmb")),
-        QStringLiteral("KRLmonitor 曲线 (*.ecmb);;CSV 文件 (*.csv);;所有文件 (*.*)"));
-    if (path.isEmpty()) return;
+    // 起始目录：上次保存目录（存在时）→ 否则今天的存档目录
+    QString startDir = m_arch.lastSaveDir;
+    if (startDir.isEmpty() || !QDir(startDir).exists()) {
+        startDir = todayArchiveDir();
+    }
+    const bool preferCsv = (m_arch.lastFormat == QLatin1String("csv"));
+    const QString suggest = QDir(startDir).filePath(
+        sanitizeFileName(archiveNameFor(*g)) + (preferCsv ? QStringLiteral(".csv")
+                                                          : QStringLiteral(".ecmb")));
+
+    // 显式格式选择：对话框上方的"文件类型"就是格式，选哪个就存哪个
+    QFileDialog dlg(this, QStringLiteral("保存波形数据"), startDir);
+    dlg.setAcceptMode(QFileDialog::AcceptSave);
+    dlg.setNameFilters({QStringLiteral("压缩存档 (*.ecmb)"), QStringLiteral("CSV 文件 (*.csv)")});
+    dlg.selectNameFilter(preferCsv ? QStringLiteral("CSV 文件 (*.csv)")
+                                   : QStringLiteral("压缩存档 (*.ecmb)"));
+    dlg.setDefaultSuffix(preferCsv ? QStringLiteral("csv") : QStringLiteral("ecmb"));
+    dlg.selectFile(QFileInfo(suggest).fileName());
+    if (dlg.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QString path = dlg.selectedFiles().value(0);
+    if (path.isEmpty()) {
+        return;
+    }
+    const bool csv = dlg.selectedNameFilter().contains(QStringLiteral("csv"), Qt::CaseInsensitive);
+    // 以所选格式为准修正扩展名（旧实现只看后缀，选 CSV 也可能存成 .ecmb）
+    const QString want = csv ? QStringLiteral("csv") : QStringLiteral("ecmb");
+    const QString other = csv ? QStringLiteral("ecmb") : QStringLiteral("csv");
+    if (path.endsWith(QLatin1Char('.') + other, Qt::CaseInsensitive)) {
+        path.chop(other.size() + 1);
+    }
+    if (!path.endsWith(QLatin1Char('.') + want, Qt::CaseInsensitive)) {
+        path += QLatin1Char('.') + want;
+    }
 
     QString err;
     if (!saveGroupToFile(g, path, err)) {
         QMessageBox::critical(this, QStringLiteral("保存失败"), err);
         return;
     }
-    if (!path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive)) {
-        g->saved = true;
-        g->savedPath = path;
-    }
-    setStatus(QStringLiteral("✓ 已保存 %1 个点 / %2 道 → %3（%4 KB）")
+
+    // 保存成功：CSV 与 ecmb 都算"已保存"，并记住目录/格式
+    g->saved = true;
+    g->savedPath = path;
+    g->savedAt = QDateTime::currentDateTime();
+    g->savedPointCount = g->len();
+    g->savedFormat = want;
+    m_arch.lastSaveDir = QFileInfo(path).absolutePath();
+    m_arch.lastFormat = want;
+    saveSettings();
+    refreshGroupsPanel();      // 让"已保存"标识立即出现
+    refreshSeamPanel();
+
+    setStatus(QStringLiteral("✓ 已保存 %1 个点 / %2 道 → %3（%4 KB）　%5")
               .arg(theme::formatThousands(g->len())).arg(g->passes.size())
-              .arg(QFileInfo(path).fileName())
-              .arg(QFileInfo(path).size() / 1024));
+              .arg(QFileInfo(path).absolutePath())
+              .arg(QFileInfo(path).size() / 1024)
+              .arg(QFileInfo(path).fileName()));
 }
 
 void MainWindow::onLoad() {
@@ -1826,10 +1883,17 @@ void MainWindow::onLoad() {
                              QStringLiteral("已达到最多 %1 组限制\n请先删除一组后再添加").arg(MAX_GROUPS));
         return;
     }
+    // 起始目录：上次载入目录（存在时）→ 否则今天的存档目录
+    QString startDir = m_arch.lastOpenDir;
+    if (startDir.isEmpty() || !QDir(startDir).exists()) {
+        startDir = todayArchiveDir();
+    }
     QStringList paths = QFileDialog::getOpenFileNames(
-        this, QStringLiteral("选择波形数据文件（可多选）"), todayArchiveDir(),
+        this, QStringLiteral("选择波形数据文件（可多选）"), startDir,
         QStringLiteral("KRLmonitor 曲线 (*.ecmb);;CSV 文件 (*.csv);;所有文件 (*.*)"));
     if (paths.isEmpty()) return;
+    m_arch.lastOpenDir = QFileInfo(paths.first()).absolutePath();
+    saveSettings();
 
     int loaded = 0;
     for (const QString& path : paths) {
@@ -1842,7 +1906,8 @@ void MainWindow::onLoad() {
         DataGroup tmp;
         EcmFileMeta meta;
         QString err;
-        if (!loadGroupFromFile(path, tmp, meta, err)) {
+        QString warn;
+        if (!loadGroupFromFile(path, tmp, meta, err, &warn)) {
             QMessageBox::critical(this, QStringLiteral("载入失败"),
                                   QFileInfo(path).fileName() + QStringLiteral("\n") + err);
             continue;
@@ -1860,13 +1925,19 @@ void MainWindow::onLoad() {
         m_groups[idx]->partLabel = meta.partLabel;
         m_groups[idx]->saved = true;
         m_groups[idx]->savedPath = path;
+        m_groups[idx]->savedAt = QFileInfo(path).lastModified();
+        m_groups[idx]->savedPointCount = m_groups[idx]->len();
+        m_groups[idx]->savedFormat =
+            path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive)
+                ? QStringLiteral("csv") : QStringLiteral("ecmb");
         loaded++;
         int npass = m_groups[idx]->passes.size();
-        setStatus(QStringLiteral("✓ 已载入 %1 个点%2 ← %3")
+        setStatus(QStringLiteral("✓ 已载入 %1 个点%2 ← %3%4")
                   .arg(theme::formatThousands(tmp.times.size()))
                   .arg(npass ? QStringLiteral(" / %1 道").arg(npass)
                              : QStringLiteral("（无道次信息，旧格式 CSV）"))
-                  .arg(name));
+                  .arg(name)
+                  .arg(warn.isEmpty() ? QString() : QStringLiteral("　⚠ %1").arg(warn)));
     }
 
     if (loaded > 0) {
@@ -2052,10 +2123,11 @@ bool MainWindow::saveGroupToFile(DataGroup* g, const QString& path, QString& err
     return saveEcm(path, *g, meta, opt, err);
 }
 
-bool MainWindow::loadGroupFromFile(const QString& path, DataGroup& g, EcmFileMeta& meta, QString& err) {
+bool MainWindow::loadGroupFromFile(const QString& path, DataGroup& g, EcmFileMeta& meta, QString& err,
+                                   QString* warn) {
     if (path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive)) {
         CsvData d;
-        if (!loadCsv(path, d, err)) {
+        if (!loadCsv(path, d, err, warn)) {
             return false;
         }
         g.times = d.times;
@@ -2105,6 +2177,9 @@ bool MainWindow::autoArchiveGroup(DataGroup* g) {
     }
     g->saved = true;
     g->savedPath = path;
+    g->savedAt = QDateTime::currentDateTime();
+    g->savedPointCount = g->len();
+    g->savedFormat = QStringLiteral("ecmb");
     return true;
 }
 
@@ -2182,6 +2257,9 @@ void MainWindow::loadSettings() {
     m_arch.timeoutMin = s.value(QStringLiteral("part/timeoutMin"), PART_TIMEOUT_MIN_DEFAULT).toInt();
     m_arch.autoArm = s.value(QStringLiteral("run/autoArm"), true).toBool();
     m_arch.rule = PartRule(s.value(QStringLiteral("part/rule"), int(PartRule::PerCycle)).toInt());
+    m_arch.lastSaveDir = s.value(QStringLiteral("dialog/lastSaveDir")).toString();
+    m_arch.lastOpenDir = s.value(QStringLiteral("dialog/lastOpenDir")).toString();
+    m_arch.lastFormat = s.value(QStringLiteral("dialog/lastFormat"), QStringLiteral("ecmb")).toString();
     restoreUiState();       // 窗口几何 + 停靠面板布局
 }
 
@@ -2197,6 +2275,9 @@ void MainWindow::saveSettings() {
     s.setValue(QStringLiteral("part/timeoutMin"), m_arch.timeoutMin);
     s.setValue(QStringLiteral("part/rule"), int(m_arch.rule));
     s.setValue(QStringLiteral("run/autoArm"), m_arch.autoArm);
+    s.setValue(QStringLiteral("dialog/lastSaveDir"), m_arch.lastSaveDir);
+    s.setValue(QStringLiteral("dialog/lastOpenDir"), m_arch.lastOpenDir);
+    s.setValue(QStringLiteral("dialog/lastFormat"), m_arch.lastFormat);
     saveUiState();          // 窗口几何 + 停靠面板布局
     s.sync();
 }

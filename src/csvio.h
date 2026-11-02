@@ -15,5 +15,6 @@ struct CsvData {
     QVector<int> esPos;
 };
 
-bool loadCsv(const QString& path, CsvData& out, QString& err);
+// 读取 CSV。warn 非空时，成功但存在"跳过行/字段缺失"等非致命情况会写入提示。
+bool loadCsv(const QString& path, CsvData& out, QString& err, QString* warn = nullptr);
 bool saveCsv(const QString& path, const DataGroup& g, QString& err);

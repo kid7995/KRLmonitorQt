@@ -21,6 +21,8 @@ private slots:
     void roundTripPreservesColumns();
     void loadsLegacyThreeColumnFormat();
     void rejectsMissingRequiredColumns();
+    void loadsSemicolonWithoutHeader();
+    void skipsBadRowsAndReportsWarning();
 };
 
 void CsvIoTest::roundTripPreservesColumns() {
@@ -76,6 +78,46 @@ void CsvIoTest::rejectsMissingRequiredColumns() {
     QString err;
     QVERIFY(!loadCsv(path, loaded, err));
     QVERIFY(!err.isEmpty());
+}
+
+// 早期文件可能没有表头、用分号分隔
+void CsvIoTest::loadsSemicolonWithoutHeader() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("old.csv"));
+    QVERIFY(writeBytes(path,
+        "0.0;200;-13;0;1036\n"
+        "0.01;201;-12;1;1036\n"));
+
+    CsvData loaded;
+    QString err;
+    QVERIFY2(loadCsv(path, loaded, err), qPrintable(err));
+    QCOMPARE(loaded.times.size(), 2);
+    QCOMPARE(loaded.pos, QVector<int>({200, 201}));
+    QCOMPARE(loaded.force, QVector<int>({-13, -12}));
+    QCOMPARE(loaded.passNo, QVector<int>({0, 1}));
+    QCOMPARE(loaded.esPos, QVector<int>({1036, 1036}));
+}
+
+// 坏行（列数不足/数值非法）只跳过并提示，不整文件失败
+void CsvIoTest::skipsBadRowsAndReportsWarning() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("mixed.csv"));
+    QVERIFY(writeBytes(path,
+        "time_s,PosR,ForceR\n"
+        "0,10,-20\n"
+        "0.5,bad,-21\n"
+        "1,12\n"
+        "1.5,13,-23\n"));
+
+    CsvData loaded;
+    QString err;
+    QString warn;
+    QVERIFY2(loadCsv(path, loaded, err, &warn), qPrintable(err));
+    QCOMPARE(loaded.times.size(), 2);
+    QCOMPARE(loaded.pos, QVector<int>({10, 13}));
+    QVERIFY(!warn.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(CsvIoTest)

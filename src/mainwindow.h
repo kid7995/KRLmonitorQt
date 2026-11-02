@@ -50,6 +50,10 @@ struct ArchiveSettings {
     PartRule rule = PartRule::PerCycle;               // 分件规则
     int timeoutMin = PART_TIMEOUT_MIN_DEFAULT;        // 超时切分（分钟）
     bool autoArm = true;                              // 打开即开始监听
+    // 文件对话框记忆（保存/载入各记各的目录 + 上次保存格式）
+    QString lastSaveDir;
+    QString lastOpenDir;
+    QString lastFormat = QStringLiteral("ecmb");      // "ecmb" / "csv"
 };
 
 // 主窗口：把各层组装起来并做事件编排（对应 Python ecm_monitor/app.py 的 App）。
@@ -125,7 +129,8 @@ private:
     void enforceMemoryPolicy();                 // 内存回收（只回收已落盘的组）
     QString groupDisplayName(const DataGroup& g) const;   // "件0007 · 粗磨 · S1-4"
     bool saveGroupToFile(DataGroup* g, const QString& path, QString& err);
-    bool loadGroupFromFile(const QString& path, DataGroup& g, EcmFileMeta& meta, QString& err);
+    bool loadGroupFromFile(const QString& path, DataGroup& g, EcmFileMeta& meta, QString& err,
+                           QString* warn = nullptr);
     void seedPartSeqFromArchive();              // 跨重启续件号
 
     // 组管理

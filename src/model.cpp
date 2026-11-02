@@ -35,6 +35,22 @@ QVector<Pass> computePasses(const QVector<double>& times, const QVector<int>& pa
         seg.i1 = n - 1;
         passes.append(seg);
     }
+
+    // 老版程序没有焊缝号（seam 恒为 0），"补充打磨"只能靠编号跳增判断：
+    //   编号跳增 >1 → 进入补充打磨并保持（sticky）；
+    //   编号回落    → 视为新的一段（老全局程序每个工位从 1 重新编号），退出补状态。
+    // 有焊缝标记的新数据会在 rebuildSeamStats()/实时路径里按"每焊缝连续性"重新判定并覆盖。
+    bool stickyRetry = false;
+    for (int i = 1; i < passes.size(); ++i) {
+        const int prev = passes[i - 1].no;
+        const int cur = passes[i].no;
+        if (cur < prev) {
+            stickyRetry = false;
+        } else if (cur > prev + 1) {
+            stickyRetry = true;
+        }
+        passes[i].retry = stickyRetry;
+    }
     return passes;
 }
 
@@ -203,7 +219,9 @@ void SeamTracker::finishSegments(double rt, int iEnd) {
 void SeamTracker::passOpened(Pass& p) {
     p.phase = SeamPhase::Grind;
     m_lastPassNo = p.no;
-    m_lastPassRetry = false;
+    // 老数据（无焊缝号）的补标志由 computePasses 推出，这里先带上，
+    // 这样段表/列表在旧协议下也能标"补"；有焊缝号时下面会按连续性重新判定。
+    m_lastPassRetry = p.retry;
     if (p.seam <= 0) {
         p.seam = curSeam;
     }
@@ -216,6 +234,7 @@ void SeamTracker::passOpened(Pass& p) {
     const bool consecutive = (p.no == s.curPass + 1);
     if (!s.retryNow && consecutive) {
         ++s.normalN;
+        p.retry = false;        // 有焊缝号时以"每焊缝连续性"为准，覆盖老数据启发式
     } else {
         p.retry = true;
         ++s.retryN;

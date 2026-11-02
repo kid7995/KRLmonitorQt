@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QVector>
+#include <QDateTime>
 
 #include "decimate.h"
 #include "station.h"
@@ -147,6 +148,9 @@ public:
     bool incomplete = false; // 断线或异常时强制封存：数据可能不完整，界面要标出来
     bool saved = false;      // 是否已经落盘（内存回收只回收已落盘的组）
     QString savedPath;       // 落盘路径（供"打开所在目录"用）
+    QDateTime savedAt;       // 保存时间（组列表显示"已保存 10:32"）
+    int savedPointCount = -1;// 保存时的点数；之后又录到新点 → "已保存 · 有新增"
+    QString savedFormat;     // "ecmb" / "csv"
     QString partLabel;       // 所属件号标签（如 "件0007"）
 
     SeamTracker seam;        // 焊缝统计（负数 PassNo 编码）
